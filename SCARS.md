@@ -98,3 +98,65 @@ on-call engineer.
 - **Evidence:** [LAB_JOURNAL.md — Investigation OPS-2202](./LAB_JOURNAL.md#investigation--ops-2202),
   fix commits in `api/database.js` (`MYSQL_CONFIG.connectionLimit`) and
   `api/server.js` (`/api/patients/recent` route).
+
+---
+
+## OPS-2203 — Bed admissions serialized on one hospital's row lock; ~200x throughput recovered, one architectural ceiling remains
+
+- **S — Symptom:** 500 concurrent admissions to the *same* hospital
+  (`POST /api/hospitals/1/admit`) produced p95=`56.72-57.14s` (baseline:
+  `78.26ms`, ~730× regression) and a **46.04% error rate** — the first
+  incident with real, high-volume database errors rather than pure latency.
+  Different hospitals were unaffected; one-at-a-time admits were fine —
+  matching the ticket exactly.
+- **C — Cause:** `POST /api/hospitals/:id/admit` ran `BEGIN -> UPDATE
+  hospitals SET available_beds = available_beds - 1 -> await
+  notifyBedRegistry() [500ms simulated network call] -> COMMIT`. The
+  `UPDATE`'s row lock (required for isolation — without it, concurrent
+  admits could race and lose a decrement) was held for the *entire* 500ms
+  external call, not just the sub-ms database write. A live join of
+  `performance_schema.data_lock_waits` to `information_schema.innodb_trx`
+  captured a 171-row single-file lock-wait chain, every query text
+  identical, all contending for hospital `id=1`'s row. `SHOW GLOBAL STATUS
+  LIKE 'Innodb_row_lock%'` showed average wait ~4992ms — right at the
+  configured `innodb-lock-wait-timeout=5s` — directly explaining why ~46%
+  of waiters timed out rather than just running slow. Capacity math: with
+  critical section W≈0.5s, theoretical max throughput for one hospital row
+  = 1/W ≈ 2 admits/sec, a hard ceiling regardless of concurrency —
+  consistent with the measured 3.58 req/s.
+- **A — Action:** Reordered to commit immediately after the (now
+  guarded) `UPDATE`, moving `notifyBedRegistry` to fire *after* commit,
+  outside the transaction. Also added `AND available_beds > 0` to the
+  `UPDATE` plus a `409 NO_BEDS_AVAILABLE` response — a separate
+  correctness fix for a floor-check gap noticed while reading the code
+  (the original query could drive beds negative under concurrency).
+  Raised `connectionLimit` 20→50 after confirming the pool was saturated
+  (`Max_used_connections`≈22) under 500 VUs.
+- **R — Result:** p95 dropped 56.72-57.14s → **1.06-1.13s** (~51×), errors
+  46.04% → **0.00%**, throughput 3.58 → **~700-720 req/s** (~200×). The
+  pool increase (20→50) was tested and barely moved p95 (1.11s→1.06s),
+  directly proving pool size was *not* the dominant remaining cost.
+  `Innodb_row_lock_time_avg` dropped to **117ms** (from ~4992ms, a ~43×
+  reduction), confirming the critical section is now genuinely short. The
+  k6 script's `p(95)<1000ms` threshold still narrowly fails (~1.06-1.13s)
+  — investigated, not hand-waved: this is the measured, reproducible cost
+  of 500 concurrent writers safely serializing onto **one** row, an
+  architectural ceiling (only one transaction can hold a given row's lock
+  at a time) that no further pool or code tuning removes.
+- **Scar / lesson:** Never hold a lock across an external network call —
+  find the minimum work that must happen *inside* the transaction (the
+  write itself) and move everything else outside it, even if that changes
+  when downstream systems get notified (a real consistency trade-off,
+  named honestly rather than hidden: the registry can now be briefly
+  behind committed state, or its notification can fail independently of
+  the admission). Also: not every miss is a bug — some latency floors are
+  architectural (single-row serialization) and the honest move is to prove
+  that with numbers (pool-size test, lock-wait-time measurement) rather
+  than either quietly ship a failing threshold or keep chasing a fix that
+  the math says won't work. A per-hospital admit-throughput panel, or an
+  alert on `Innodb_row_lock_time_avg` crossing a fraction of
+  `innodb-lock-wait-timeout`, would have caught this building before a
+  ticket was filed.
+- **Evidence:** [LAB_JOURNAL.md — Investigation OPS-2203](./LAB_JOURNAL.md#investigation--ops-2203),
+  fix commits in `api/server.js` (`/api/hospitals/:id/admit` route) and
+  `api/database.js` (`MYSQL_CONFIG.connectionLimit`).

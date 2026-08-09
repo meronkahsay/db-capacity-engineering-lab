@@ -112,8 +112,10 @@ app.get('/api/patients/search', async (req, res) => {
 
 // ---------------------------------------------------------------------------
 // Admit a patient to a hospital (decrement available beds).
-// We update the bed count, then notify the regional bed registry that the
-// count changed before finalizing, so the two systems stay consistent.
+// The row lock on `hospitals` must only be held for the UPDATE itself, so we
+// commit before notifying the (slow, external) bed registry -- otherwise
+// every concurrent admit to the same hospital serializes behind the
+// registry call's latency, not just the database write.
 // ---------------------------------------------------------------------------
 app.post('/api/hospitals/:id/admit', async (req, res) => {
   const hospitalId = Number(req.params.id);
@@ -123,17 +125,24 @@ app.post('/api/hospitals/:id/admit', async (req, res) => {
     conn = await pool.getConnection();
     await conn.beginTransaction();
 
-    await conn.query(
-      'UPDATE hospitals SET available_beds = available_beds - 1 WHERE id = ?',
+    const [result] = await conn.query(
+      'UPDATE hospitals SET available_beds = available_beds - 1 WHERE id = ? AND available_beds > 0',
       [hospitalId]
     );
 
-    // Notify the external regional bed registry of the new count before we
-    // commit (simulated here with a network round-trip latency).
-    await notifyBedRegistry(hospitalId);
+    if (result.affectedRows === 0) {
+      await conn.rollback();
+      return res.status(409).json({ error: 'NO_BEDS_AVAILABLE', hospitalId });
+    }
 
     await conn.commit();
     res.json({ status: 'admitted', hospitalId });
+
+    // Notify the external regional bed registry after commit -- outside the
+    // transaction, so it no longer holds the row lock during this call.
+    notifyBedRegistry(hospitalId).catch(() => {
+      dbErrorsTotal.inc({ route: '/api/hospitals/:id/admit', code: 'REGISTRY_NOTIFY_FAILED' });
+    });
   } catch (err) {
     if (conn) {
       try { await conn.rollback(); } catch (_) { /* ignore */ }

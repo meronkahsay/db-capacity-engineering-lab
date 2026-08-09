@@ -21,13 +21,14 @@ const MYSQL_CONFIG = {
 
   // Sized from measured demand: Little's Law (L = lambda*W) with the
   // reproduce-OPS-2202 burst (~1620 req/s, ~1.73ms/query) gives an average
-  // need of ~2.8 concurrent connections. 20 gives ~7x headroom for bursty
-  // arrivals without approaching MySQL's own max_connections ceiling (151).
+  // need of ~2.8 concurrent connections. Raised to 50 after OPS-2203 showed
+  // 20 saturating (Threads_connected~21/Max_used_connections~22) under a
+  // 500-VU admissions surge -- still well under MySQL's max_connections=151.
   waitForConnections: true,
-  connectionLimit: 20,
+  connectionLimit: 50,
   queueLimit: 0,
   connectTimeout: 10_000,
-  maxIdle: 20,
+  maxIdle: 50,
   idleTimeout: 60_000,
   enableKeepAlive: true,
 };

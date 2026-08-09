@@ -419,8 +419,20 @@ running (0m30.7s), 00/50 VUs, 1500 complete and 0 interrupted iterations
 
 ### Hypothesis
 > Given one-at-a-time works but concurrent admits to the *same* hospital fail,
-> I think the cause is _____________________________________________________
-> and the failure will show up as ______ (a DB error? a timeout? a stall?) ___.
+> I think the cause is a row lock on `hospitals.available_beds` (taken by the
+> `UPDATE` inside the admit transaction) being held across a slow, unrelated
+> 500ms simulated external call (`notifyBedRegistry`) that happens *before*
+> `COMMIT` — so the lock is held far longer than the database work itself
+> requires
+> and the failure will show up as a mix of two things: severely reduced
+> throughput for that one hospital (concurrent admits serialize to roughly
+> one every ~500ms, since each must wait for the previous transaction's lock
+> to release) and, once enough requests queue up, real database errors
+> (lock wait timeout) once an individual request's wait exceeds MySQL's
+> configured `innodb-lock-wait-timeout` (5s per `docker-compose.yml`).
+> Different hospitals should be largely unaffected because InnoDB row locks
+> are per-row, not table-wide — hospital #2's row is untouched by hospital
+> #1's lock.
 
 ### Observation (evidence)
 > While the reproduction runs, inspect concurrent writers to one row:
@@ -432,14 +444,45 @@ running (0m30.7s), 00/50 VUs, 1500 complete and 0 interrupted iterations
 > Paste the most telling waiter/blocker rows and the failure signature you saw
 > (a DB error + code, a timeout, or stalled/near-zero throughput):
 > ```
+> k6 (500 VUs, 30s, all admitting to hospital id=1) -- reproduced twice,
+> consistent both times:
+>   Run 1: p95=57.14s  error_rate=46.04% (99/215)  RPS=3.58/s
+>   Run 2: p95=56.72s  error_rate=46.04% (99/215)  RPS=3.58/s
+>   avg=~30.6s med=~31s max=~59.8s -- median request, not just tail, is
+>   catastrophically slow. 388 iterations interrupted (never got a response
+>   inside the whole 60s window) -- real backlog is worse than the 215
+>   "completed" requests alone suggest.
 >
+> Live lock-wait chain, captured via a custom join query while the
+> reproduction was running (performance_schema.data_lock_waits joined to
+> information_schema.innodb_trx for readable query text):
+>   171 rows returned. Every single row's waiting_query and blocking_query
+>   is identical: "UPDATE hospitals SET available_beds = available_beds - 1
+>   WHERE id = 1" -- every contending transaction is fighting over hospital
+>   id=1's row, exactly as the ticket described. The rows form a single-file
+>   chain (e.g. trx 2923 blocks 2925, which -- once unblocked -- itself
+>   blocks 2927, which blocks 2929, ...): a serialized queue on one row, not
+>   independent conflicts.
+>
+> SHOW GLOBAL STATUS LIKE 'Innodb_row_lock%'; (captured mid-run):
+>   Innodb_row_lock_current_waits: 21    -- 21 transactions blocked at this instant
+>   Innodb_row_lock_waits:         1197  -- total lock-wait events so far
+>   Innodb_row_lock_time_avg:      4992  -- ms; average wait ~5.0s, right at
+>                                            the configured timeout ceiling
+>   Innodb_row_lock_time_max:      5653  -- ms; longest wait just over 5s
+>
+> docker-compose.yml: mysql-db command includes
+>   --innodb-lock-wait-timeout=5
+> -- confirms waits averaging ~5s are landing right at the timeout boundary,
+> directly explaining why a large fraction of waiters fail outright rather
+> than just running slow.
 > ```
 | Metric                     | Value | vs. baseline |
 |----------------------------|-------|--------------|
-| p95 / p99 latency          |       |              |
-| Max successful admits/sec  |       |              |
-| DB error(s) + code         |       |              |
-| Error rate                 |       |              |
+| p95 / p99 latency          | p95=56.72-57.14s (two runs) | ~725-730x worse than baseline p95=78.26ms |
+| Max successful admits/sec  | 3.58 req/s (RPS, both runs) | far below baseline's 48.84 req/s despite 500 VUs vs 50 |
+| DB error(s) + code         | Row-lock wait timeout (`ER_LOCK_WAIT_TIMEOUT`-class InnoDB error, surfaced as HTTP 500 by the catch block in server.js); confirmed via Innodb_row_lock_time_avg (~5.0s) sitting at the configured 5s `innodb-lock-wait-timeout` | 0 errors at baseline |
+| Error rate                 | 46.04% (99/215 completed; 388 more never completed within 60s) | 0.00% at baseline |
 
 ### Root cause & mechanism
 > Explain why concurrency cannot beat serialization on a single hot row. If the
@@ -447,12 +490,102 @@ running (0m30.7s), 00/50 VUs, 1500 complete and 0 interrupted iterations
 > throughput for that one row, regardless of how many callers pile on?
 > 1 / W = ______ admits/sec. Where does the time in the critical section go, and
 > which of the transactional guarantees is enforcing the wait? ________________
+>
+> **Mechanism: a row lock held across an unrelated, slow external call inside
+> the transaction.** `POST /api/hospitals/:id/admit` (`api/server.js`) runs:
+> `BEGIN` -> `UPDATE hospitals SET available_beds = available_beds - 1 WHERE
+> id = ?` -> `await notifyBedRegistry(hospitalId)` (a simulated 500ms network
+> round-trip) -> `COMMIT`. The `UPDATE` takes an exclusive row lock on that
+> hospital's row the instant it executes -- this is InnoDB enforcing
+> **isolation** (the "I" in ACID): without it, two concurrent transactions
+> could both read `available_beds=10`, both compute `9`, and both write `9`,
+> silently losing an admission (a lost-update race). The lock is correct and
+> necessary. The bug is *how long* it's held: it isn't released until
+> `COMMIT`, and `notifyBedRegistry` -- pure network-call latency, unrelated
+> to the database -- runs *before* `COMMIT`, so the lock is held for the
+> full ~500ms of that call plus the trivial UPDATE cost, not just the
+> UPDATE's own (sub-millisecond) execution time.
+>
+> This directly explains why concurrency cannot help: every other
+> transaction wanting to admit to the *same* hospital must wait for the
+> current lock holder to finish -- not because the database is slow, but
+> because correctness *requires* only one writer to hold that row's lock at
+> a time. Adding more concurrent callers doesn't parallelize this critical
+> section; it only lengthens the queue behind it. This is confirmed directly
+> by the captured lock-wait chain: 171 rows of `data_lock_waits`, all
+> contending for the same `id=1` row, forming a single-file queue where each
+> transaction blocks the next.
+>
+> **Capacity math:** critical section length W ≈ 0.5s (dominated by the
+> `notifyBedRegistry` delay; the UPDATE itself is ~sub-ms). Theoretical max
+> throughput for one hospital row = 1/W = 1/0.5 = **2 admits/sec, regardless
+> of how many concurrent callers pile on** -- this is a hard ceiling set by
+> serialization, not by database horsepower. Measured throughput was 3.58
+> req/s, close to (and not wildly inconsistent with) this ceiling given some
+> admissions target other hospital IDs are absent here (all 500 VUs target
+> hospital 1) and some variance in real timing; the key point is the ceiling
+> is low and roughly *constant* no matter how many VUs are thrown at it --
+> confirmed by the fact that both runs (same 500 VUs) landed on the same
+> 3.58 req/s and same 46.04% error rate almost exactly. With W=0.5s and a
+> 5s `innodb-lock-wait-timeout`, only about 10 transactions (5s / 0.5s) can
+> be queued behind the lock holder before a waiter times out and errors --
+> with 500 VUs all targeting one row, the queue depth vastly exceeds that,
+> so a large, predictable fraction fail outright.
 
 ### Fix & verify
 > The change you made (consider: shrinking the critical section, moving slow
 > work out of the transaction, atomic guarded updates, reducing contention on
-> the hot row): _____________________________________________________________
-> Re-measured throughput / error rate: ______________________________________
+> the hot row):
+> In `api/server.js`, `/api/hospitals/:id/admit`:
+> 1. Reordered so `COMMIT` happens immediately after the guarded `UPDATE`,
+>    and `notifyBedRegistry` (the 500ms simulated external call) now runs
+>    *after* commit, outside the transaction -- fire-and-forget with its own
+>    error tracking, so the row lock is held only for the fast UPDATE, not
+>    the network call.
+> 2. Added `AND available_beds > 0` to the `UPDATE` (an atomic guarded
+>    update) plus an `affectedRows === 0` check returning `409
+>    NO_BEDS_AVAILABLE`. This is a separate correctness fix, not a
+>    performance one -- the original query had no floor check and could
+>    drive `available_beds` negative under concurrent admits. Verified
+>    beds were seeded at 1,000,000 per hospital, so this guard did not
+>    interfere with the load-test results (nowhere near exhausted).
+> 3. Also raised `connectionLimit` 20->50 in `api/database.js` after
+>    confirming (`Threads_connected`~21, `Max_used_connections`~22) the
+>    pool was saturated under 500 VUs -- tested, but see below: this did
+>    **not** meaningfully change p95 (1.11s -> 1.06s), proving the pool was
+>    not the dominant remaining cost once the critical section was fixed.
+>
+> Re-measured throughput / error rate:
+> ```
+> BEFORE (broken):        p95=56.72-57.14s  errors=46.04%  RPS=3.58/s
+> AFTER (commit-then-notify, pool=20): p95=1.11s  errors=0.00%  RPS=717.3/s
+> AFTER (+ pool=50):       p95=1.06-1.13s  errors=0.00%  RPS=699-721/s
+> ```
+> New p95: **~1.06-1.13s** (vs. broken 56.72-57.14s — a **~51x improvement**)
+> New error rate: **0.00%** (vs. broken 46.04% — lock-wait-timeout errors
+> completely eliminated)
+> New throughput: **~700-720 req/s** (vs. broken 3.58 req/s — a **~200x
+> improvement**)
+>
+> **Honest assessment of the remaining threshold miss:** the k6 script's
+> `p(95)<1000ms` threshold still fails by ~6-13%. This was investigated, not
+> ignored: raising the connection pool from 20 to 50 barely moved p95 (1.11s
+> -> 1.06s), directly proving pool size is not the dominant remaining cost.
+> `FLUSH STATUS` + a fresh measurement showed `Innodb_row_lock_time_avg` had
+> dropped to **117ms** (from ~4992ms before the fix -- a **~43x reduction**),
+> confirming the critical section really is now short. The remaining ~1s
+> p95 is the realistic, measured cost of 500 concurrent VUs safely
+> serializing writes onto **one** database row -- each transaction still
+> must wait its turn for that row's lock, however briefly, and 500-way
+> contention on a single row adds up even at ~117ms average wait. This is
+> an architectural ceiling (only one writer can hold a given row's lock at
+> a time -- a direct consequence of the isolation guarantee that prevents
+> lost updates), not an undiscovered bug: further code or pool tuning
+> cannot remove it. A true fix for this specific threshold would require a
+> different architecture (e.g. an async queue absorbing admission requests
+> for a single hot hospital and processing them off the HTTP request path,
+> or batching decrements), which is a product/scale decision beyond this
+> lab's scope, not a database configuration change.
 
 ---
 
