@@ -595,8 +595,24 @@ running (0m30.7s), 00/50 VUs, 1500 complete and 0 interrupted iterations
 
 ### Hypothesis
 > Given memory spikes right before each restart and only the big export is
-> affected, I think the cause is ___________________________________________
-> because __________________________________________________________________.
+> affected, I think the cause is `/api/patients/export` loading the entire
+> ~100,000-row patient table into memory in one query (`SELECT * FROM
+> patients`, no `LIMIT`), holding all rows as JS objects, then serializing
+> the whole result to one giant JSON string in a single response
+> because that memory usage scales with total table size (not a fixed page
+> size like the other endpoints), and the container is deliberately
+> misconfigured to expose this: `NODE_OPTIONS: --max-old-space-size=256`
+> tells V8 it may grow its heap to 256MB, but `mem_limit: 160m` caps the
+> container's real memory at 160MB. V8 has no visibility into the cgroup
+> limit, so it keeps allocating toward 256MB while the kernel is watching
+> the container's actual usage against 160MB. Once real usage crosses
+> 160MB, the kernel OOM-killer kills the process outright (not a graceful
+> JS-level error) -- explaining both "the memory graph shoots straight up"
+> (V8 legitimately allocating more heap) and "restarts" (Docker's
+> `restart: unless-stopped` policy reviving a killed container). Because
+> the OOM-kill takes down the whole Node process, every concurrent
+> request -- not just the export caller -- is dropped, matching "it takes
+> down other users' requests too."
 
 ### Observation (evidence)
 > Watch `nodejs_heap_size_used_bytes`, GC pauses, and restarts:
@@ -606,16 +622,39 @@ running (0m30.7s), 00/50 VUs, 1500 complete and 0 interrupted iterations
 > ```
 | Metric                          | Value |
 |---------------------------------|-------|
-| Approx. payload size per request|       |
-| Peak heap before crash          |       |
-| Time-to-first-crash             |       |
-| Container restart count         |       |
-| GC pause trend                  |       |
+| Approx. payload size per request| Full `patients` table, ~100,000 rows x ~363 bytes/row (measured average from OPS-2201's `/recent` response) $\approx$ 36 MB raw JSON, before JS object/serialization overhead |
+| Peak heap before crash          | ~253.5-259.6 MB (from V8 GC log: `Mark-Compact (reduce) 253.5 (258.2) -> 252.7 (258.6) MB`), right at the `--max-old-space-size=256` ceiling |
+| Time-to-first-crash             | ~117-125s into the 2-minute run (first `connection reset by peer` wave at t=117s, `EOF` wave at t=125s) |
+| Container restart count         | 13 (`docker inspect capacity-api --format RestartCount`) |
+| GC pause trend                  | Escalating: consecutive `Mark-Compact` passes took 1408.62ms then 1714.02ms with negligible memory reclaimed (258.2->258.6MB, i.e. GC was failing to free space) -- classic thrashing right before a crash |
 
 > Paste the crash / exit log lines:
 > ```
+> docker stats snapshot right before crash: capacity-api 56.25% CPU
+>   159.1MiB / 160MiB (99.44%)
 >
+> <--- Last few GCs --->
+> [1:0x7c04e00]  8201 ms: Mark-Compact (reduce) 253.5 (258.2) -> 252.7 (258.6) MB,
+>   1408.62 / 0.13 ms (...) allocation failure; scavenge might not succeed
+> [1:0x7c04e00]  9931 ms: Mark-Compact (reduce) 254.5 (259.5) -> 253.7 (259.6) MB,
+>   1714.02 / 0.00 ms (...) allocation failure; scavenge might not succeed
+>
+> <--- JS stacktrace --->
+> FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory
+>  1: node::OOMErrorHandler(...)
+>  ...
+>  (crash, then "capacity-api listening on :3000" reappears -- Docker's
+>  restart: unless-stopped policy reviving the container)
+>
+> k6 reproduction (50 VUs, 2min): 100.00% error rate (111,893/111,893 failed),
+>   0 successful requests. Failures: "connection reset by peer" (~t=117s,
+>   mid-crash) then "EOF" (~t=125s, container restarting / not yet accepting).
 > ```
+| Metric                     | Value | vs. baseline |
+|----------------------------|-------|--------------|
+| Error rate                 | 100.00% (111893/111893) | 0.00% at baseline -- total outage, the worst of any incident |
+| Successful requests        | 0 | vs. baseline's 100% success |
+| Container restarts         | 13 | 0 at baseline |
 
 ### Root cause & mechanism
 > Estimate per-row size, then the full payload: rows × bytes/row = ______ MB.
@@ -623,13 +662,134 @@ running (0m30.7s), 00/50 VUs, 1500 complete and 0 interrupted iterations
 > container's memory budget (160MB locally / 256MB in prod). Explain what happens
 > to GC frequency, CPU, and
 > throughput as live heap approaches the limit, and why the current approach
-> uses O(N) memory while a better one could use far less. ____________________
+> uses O(N) memory while a better one could use far less.
+>
+> **Mechanism, corrected from the hypothesis by evidence:** `GET
+> /api/patients/export` runs `SELECT * FROM patients` with no `LIMIT`,
+> pulling all ~100,000 rows into memory as JS objects, then
+> `JSON.stringify`-ing the entire set into one response. Using the measured
+> ~363 bytes/row average (from OPS-2201's `/recent` payload), raw JSON for
+> the full table $\approx$ 100,000 x 363 bytes $\approx$ **36 MB** -- but
+> the *live heap* cost is substantially higher than the raw JSON size,
+> because holding ~100,000 individual JS objects (each with its own
+> property names, V8 object headers, and string allocations for
+> `first_name`/`last_name`/`email`/`diagnosis`/`notes`) costs meaningfully
+> more than the serialized byte count, and multiple copies can coexist
+> briefly (the query result array, then the JSON string being built by
+> `JSON.stringify`) before the original can be garbage collected.
+>
+> I originally hypothesized a silent kernel-level OOM-kill (the container's
+> `mem_limit: 160m` cutting off a V8 heap that "believes" it can grow to
+> 256MB, per `NODE_OPTIONS: --max-old-space-size=256`). **The evidence
+> disproves the specific mechanism, while confirming the broader
+> diagnosis:** `docker inspect` showed `OOMKilled: false` for the captured
+> restart, and the actual crash log is a V8-internal fatal error --
+> `FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out
+> of memory` -- triggered by V8's *own* `--max-old-space-size=256` ceiling,
+> not an external kernel kill. The GC log shows heap sitting at
+> **253.5-259.6MB**, right at that 256MB configured limit, with two
+> consecutive `Mark-Compact` (full garbage collection) passes taking
+> **1.4s and 1.7s** and reclaiming almost nothing (258.2MB -> 258.6MB) --
+> V8 was thrashing, repeatedly trying to free space that didn't exist,
+> before giving up and self-terminating via its fatal-error handler. The
+> 160MB container cap is still directly implicated -- `docker stats` showed
+> real container memory at **159.1/160MiB (99.44%)** moments before the
+> crash, meaning the container's cgroup limit and V8's heap limit were
+> being approached together, and either one crossing first would end the
+> process (a kernel OOM-kill on 160MB breach, or V8's self-triggered fatal
+> error on 256MB heap pressure it couldn't relieve). In this run, V8's own
+> ceiling triggered first, but the underlying cause -- unbounded O(N)
+> memory usage growing with table size -- is unchanged either way.
+>
+> As the live heap approaches either limit, GC frequency and pause duration
+> both increase sharply (visible directly in the escalating Mark-Compact
+> times), consuming CPU that would otherwise serve requests (56.25% CPU
+> observed even under just 50 VUs) and stalling the event loop during each
+> GC pause -- throughput for *all* concurrent requests degrades, not just
+> the export caller, which is exactly the "it takes down other users'
+> requests too" symptom from the ticket. The current approach uses O(N)
+> memory in table size because it materializes the entire result set (query
+> results, then JS objects, then one giant JSON string) before sending
+> anything; a **streaming** approach could hold only a small, bounded
+> window of rows in memory at any time (O(1) or O(page size) instead of
+> O(N)), sending each chunk to the client as it's produced rather than
+> waiting to assemble the whole response.
 
 ### Fix & verify
 > The change you made (consider: bounding how much of the result set is in
 > memory at once, streaming to the response, sensible page sizes, compression):
-> ____________________________________________________________________________
-> Re-run evidence — new peak heap: ______  restarts: ______  error rate: ______
+> Two changes, applied in sequence -- the same pattern as every other
+> incident in this lab: the first "obvious" fix helped enormously but wasn't
+> the full story.
+> 1. **Streaming**, first: replaced `pool.query('SELECT * FROM patients')`
+>    (buffers all rows, then `res.json(...)` serializes the whole array at
+>    once) with `pool.pool.query(...).stream()` -- `mysql2`'s row-by-row
+>    stream -- writing each row as one line of newline-delimited JSON
+>    (`res.write(JSON.stringify(row) + '\n')`) as it arrives from MySQL,
+>    instead of materializing the full result set first.
+> 2. **Pagination**, after streaming alone proved insufficient (see below):
+>    added a `LIMIT 2000` page size with a cursor (`WHERE id > ?`, using the
+>    indexed primary key -- cheap at any offset, unlike `LIMIT/OFFSET` which
+>    slows down deeper into the table) via an `?after=<id>` query param, and
+>    `X-Next-After` / `X-Has-More` response trailers so the ETL client can
+>    page through the full table in bounded chunks.
+>
+> **Why streaming alone wasn't enough (another "obvious fix doesn't fully
+> work" moment):** after adding streaming only, `docker stats` confirmed
+> memory stayed low throughout (50.11MiB/160MiB, 31%) and **zero crashes**
+> occurred (`RestartCount: 0`, vs. 13 before) -- the memory/crash mechanism
+> was completely fixed. But the reproduction still failed its
+> `http_req_failed rate<0.05` threshold at **14.78%** (17/115), with
+> `request timeout` errors and catastrophic latency (avg=49.99s,
+> p95=1m50s). Evidence pointed at the real remaining cost: `data_received`
+> was **4.4 GB** across just 115 completed requests (~38MB/request) --
+> streaming fixed *memory*, not *total bytes transferred*. 50 concurrent
+> callers each streaming the full ~100k-row table saturates bandwidth/CPU
+> doing legitimate transfer work, and some requests exceeded k6's own 120s
+> client-side timeout. This mirrors OPS-2201/2202 exactly: an unbounded
+> result set is a capacity problem independent of *how* it's delivered.
+>
+> **A bug found and fixed along the way:** the first pagination attempt set
+> `X-Next-After`/`X-Has-More` as regular headers in the stream's `'end'`
+> handler, but Node/Express flushes response headers on the *first*
+> `res.write()` call -- by the time `'end'` fired, headers had already been
+> sent, so the values were silently dropped (confirmed via `curl -D -`,
+> headers missing). Fixed by declaring `Trailer: X-Next-After, X-Has-More`
+> up front and using `res.addTrailers(...)` instead of `res.setHeader(...)`
+> in the `'end'` handler -- HTTP trailers are explicitly designed for
+> metadata that's only known after a streamed body completes. Verified via
+> `curl -D -` that both trailers now appear correctly after the body.
+>
+> Re-run evidence:
+> ```
+> BEFORE (buffered, unbounded):     errors=100.00% (111893/111893) restarts=13
+>   peak heap ~253-259MB (V8 max-old-space-size=256 ceiling), container
+>   memory 159.1/160MiB (99.44%) just before crash. FATAL ERROR: Reached
+>   heap limit Allocation failed - JavaScript heap out of memory.
+> STREAMING ONLY (unbounded):       errors=14.78% (17/115)  restarts=0
+>   memory 50.11MiB/160MiB (31%), p95=1m50s, data_received=4.4GB
+> STREAMING + PAGINATED (final):    errors=0.00% (0/14305)  restarts=0
+>   p95=611.87ms, RPS=118.82/s, data_received=10GB (across full 2min run,
+>   ~700KB/request for a 2000-row NDJSON page)
+> ```
+> New peak heap: not re-captured in the final run, but architecturally
+> bounded by page size (2000 rows) regardless of table growth, unlike the
+> old O(N)-in-table-size approach -- the mechanism that caused the original
+> crash (heap scaling with `patients` row count) no longer exists.
+> Restarts: **0** (was 13)
+> Error rate: **0.00%** (was 100.00% broken, 14.78% streaming-only)
+> New p95: **611.87ms** (was total failure; streaming-only gave 1m50s)
+> New throughput: **118.82 req/s** (was ~0 useful; streaming-only gave
+> 0.75 req/s)
+>
+> Any trade-off introduced by your fix? The export is no longer a single
+> call returning everything -- ETL clients must now page through with
+> `after`/`X-Next-After` until `X-Has-More` is false, which is more caller
+> complexity than the original one-shot endpoint (though the original was
+> never actually safe to call at scale). NDJSON instead of a single JSON
+> array is also a client-side parsing change (read line-by-line instead of
+> `JSON.parse` on the whole body) -- appropriate for a streaming export, but
+> a breaking API change for any existing caller expecting the old shape.
 
 ---
 

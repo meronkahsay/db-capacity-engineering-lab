@@ -161,16 +161,53 @@ function notifyBedRegistry(_hospitalId) {
 
 // ---------------------------------------------------------------------------
 // Full patient export for the analytics/ETL team.
+// Streams a bounded page of rows as newline-delimited JSON instead of
+// materializing the whole ~100k-row table in memory: per-request memory and
+// payload size stay bounded (O(page size), not O(table size)) regardless of
+// how large `patients` grows. The ETL job pages through with `after` (a
+// cursor on the indexed primary key -- cheap at any offset, unlike
+// LIMIT/OFFSET which gets slower the deeper you page).
 // ---------------------------------------------------------------------------
-app.get('/api/patients/export', async (_req, res) => {
-  try {
-    const pool = getPool();
-    const [rows] = await pool.query('SELECT * FROM patients');
-    res.json({ count: rows.length, data: rows });
-  } catch (err) {
+const EXPORT_PAGE_SIZE = 2000;
+
+app.get('/api/patients/export', (req, res) => {
+  const pool = getPool();
+  const after = Number(req.query.after) || 0;
+  // Headers must be declared before the body starts streaming (res.write
+  // flushes headers on first call), so cursor/has-more metadata is sent as
+  // an HTTP trailer instead -- available only after the body is complete.
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Trailer', 'X-Next-After, X-Has-More');
+
+  const queryStream = pool.pool
+    .query('SELECT * FROM patients WHERE id > ? ORDER BY id LIMIT ?', [after, EXPORT_PAGE_SIZE])
+    .stream();
+
+  let lastId = after;
+  let rowCount = 0;
+
+  queryStream.on('data', (row) => {
+    lastId = row.id;
+    rowCount += 1;
+    res.write(JSON.stringify(row) + '\n');
+  });
+
+  queryStream.on('end', () => {
+    res.addTrailers({
+      'X-Next-After': String(lastId),
+      'X-Has-More': String(rowCount === EXPORT_PAGE_SIZE),
+    });
+    res.end();
+  });
+
+  queryStream.on('error', (err) => {
     dbErrorsTotal.inc({ route: '/api/patients/export', code: err.code || 'UNKNOWN' });
-    res.status(500).json({ error: err.code || 'ERROR', message: err.message });
-  }
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.code || 'ERROR', message: err.message });
+    } else {
+      res.end();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -160,3 +160,58 @@ on-call engineer.
 - **Evidence:** [LAB_JOURNAL.md — Investigation OPS-2203](./LAB_JOURNAL.md#investigation--ops-2203),
   fix commits in `api/server.js` (`/api/hospitals/:id/admit` route) and
   `api/database.js` (`MYSQL_CONFIG.connectionLimit`).
+
+---
+
+## OPS-2204 — Nightly export crash-looped the whole service; streaming alone wasn't enough
+
+- **S — Symptom:** 50 concurrent callers of `GET /api/patients/export`
+  (unbounded `SELECT * FROM patients`, ~100,000 rows, no `LIMIT`) produced
+  a **100.00% error rate** (111,893/111,893 failed) and **13 container
+  restarts** in a 2-minute run — total service outage, the worst incident
+  in the lab. `docker stats` caught the container at 159.1/160MiB (99.44%)
+  moments before a crash.
+- **C — Cause:** the export buffered the entire result set into memory
+  (one giant array of ~100,000 JS objects, then one `JSON.stringify` call)
+  before sending anything. The hypothesis (a silent kernel OOM-kill from
+  the `NODE_OPTIONS: --max-old-space-size=256` vs `mem_limit: 160m`
+  mismatch) was **partially disproven by evidence** — `docker inspect`
+  showed `OOMKilled: false`; the actual crash log was a V8-internal
+  `FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out
+  of memory`, with heap sitting at 253.5-259.6MB (right at V8's own 256MB
+  ceiling) and two consecutive full GCs (1.4s, 1.7s) reclaiming almost
+  nothing before V8 self-terminated. The 160MB container cap was still
+  directly implicated (99.44% real memory use at the same moment) — the
+  underlying cause (O(N) memory scaling with table size) was unchanged
+  either way; only the specific trigger differed from the hypothesis.
+- **A — Action:** two changes, in sequence. (1) Replaced the buffered query
+  with `mysql2`'s row-by-row `.stream()`, writing newline-delimited JSON as
+  rows arrived instead of materializing the full result set. (2) After
+  streaming alone proved insufficient (see Result), added cursor-based
+  pagination (`LIMIT 2000` + `WHERE id > ?` on the indexed primary key,
+  `?after=` param, `X-Next-After`/`X-Has-More` response trailers).
+- **R — Result:** Streaming alone: **restarts eliminated (13→0)**, memory
+  stayed flat at 50.11MiB/160MiB (31%) — but a *new* failure mode appeared:
+  14.78% `request timeout` errors and p95=1m50s, traced to `data_received`
+  of 4.4GB across 115 requests (~38MB/request) — streaming fixed memory,
+  not total bytes transferred, and 50 concurrent full-table streams
+  saturated bandwidth/CPU. Streaming + pagination together: **0.00% errors**
+  (0/14,305), p95=**611.87ms**, throughput 0.75→**118.82 req/s**, restarts
+  still 0. A real bug was found and fixed along the way: the first
+  pagination attempt set response headers in the stream's `'end'` handler,
+  but Node flushes headers on the first `res.write()` — silently dropped
+  until switched to HTTP trailers (`res.addTrailers`), verified via `curl -D -`.
+- **Scar / lesson:** Fixing memory (streaming) does not automatically fix
+  capacity — total data volume is its own resource, separate from how
+  carefully you hold it in RAM. An unbounded result set is unsafe at any
+  concurrency no matter how cleverly you stream it; the durable fix is
+  always to bound *how much* is returned per call, not just *how*. Also: a
+  plausible-sounding root cause (kernel OOM-kill) can be subtly wrong even
+  when the broader diagnosis (memory scaling with table size) is right —
+  `docker inspect`'s `OOMKilled` field and the actual crash log are the
+  ground truth, not the first theory that fits the symptoms. A per-route
+  `data_received`/bandwidth panel in Grafana, or an alert on
+  `nodejs_heap_size_used_bytes` approaching `--max-old-space-size`, would
+  have caught this building before a ticket was filed.
+- **Evidence:** [LAB_JOURNAL.md — Investigation OPS-2204](./LAB_JOURNAL.md#investigation--ops-2204),
+  fix commit in `api/server.js` (`/api/patients/export` route).
