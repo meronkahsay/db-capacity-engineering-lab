@@ -797,13 +797,78 @@ running (0m30.7s), 00/50 VUs, 1500 complete and 0 interrupted iterations
 
 > Rank the four incidents by **blast radius** (threat to overall availability at
 > scale), justified with your measured numbers:
-> 1. ____________________________________________________________________
-> 2. ____________________________________________________________________
-> 3. ____________________________________________________________________
-> 4. ____________________________________________________________________
+>
+> **1. OPS-2204 (nightly export)** — the only incident that took down the
+> *entire* service for *every* user, not just callers of the broken
+> endpoint. Measured: 100.00% error rate across all 111,893 requests during
+> the reproduction (not just export calls — the whole process was crash-
+> looping, 13 restarts in 2 minutes), because the failure mode is a crashed
+> Node process, which cannot serve *any* route while it's down or
+> restarting. It's also the easiest to trigger unintentionally — any
+> caller of `/export` under modest concurrent load eventually hits the
+> memory ceiling as the table grows ("ever since the patient table grew,"
+> per the ticket), with no need for adversarial timing or a mass-casualty-
+> scale surge. Blast radius: total, and low-effort to trigger.
+>
+> **2. OPS-2203 (bed admissions)** — the only incident with real, high-
+> volume database errors on a write path (46.04% of admission attempts
+> failed outright with lock-wait-timeouts), directly threatening the
+> patient-safety-critical action of admitting patients during a mass-
+> casualty surge — the worst possible moment for this to fail. But the
+> blast radius is architecturally self-limiting: InnoDB row locks are
+> per-row, so the lock-wait chain we captured showed contention isolated to
+> one hospital's row — other hospitals' admissions kept working (confirmed
+> by the ticket's own observation and by locking mechanics). Serious and
+> safety-relevant, but contained, not total.
+>
+> **3. OPS-2202 (registration surge)** — severe degradation (p95 43×
+> worse than baseline initially) but zero permanent data loss or hard
+> failures once fully understood — the "DB is bored" paradox meant the
+> system was queueing, not corrupting or crashing, and it recovered
+> instantly once load dropped (confirmed: no restarts, no OOM, clean
+> recovery). The intermediate pool-only fix did introduce a transient
+> 0.37% connection-reset rate, but that was fully resolved, not a lasting
+> characteristic of the incident.
+>
+> **4. OPS-2201 (patient search)** — the mildest: p95 regressed severely
+> (142×) but error rate stayed at 0.00% even at the absolute worst
+> measured point. Users experienced slowness, never a failure or lost
+> data. Contained to one endpoint, no spillover to other routes measured
+> in the reproduction.
 >
 > If you could ship only **one** fix before a launch, which and why?
-> ____________________________________________________________________________
+> The **OPS-2204 export fix** (streaming + pagination). Reasoning from the
+> ranking above: it's the only incident capable of taking the *entire*
+> platform down for *every* user, it requires no adversarial or unusually
+> high load to trigger (just table growth over time, which is guaranteed
+> to happen), and — unlike OPS-2203, which is architecturally self-limiting
+> to one hot row — a crash-looping process has no natural containment.
+> Shipping this one fix converts the single highest-blast-radius, easiest-
+> to-trigger failure mode into a bounded, well-behaved one (0% errors,
+> restarts eliminated, confirmed with real before/after evidence).
 >
 > For each incident, what alert or dashboard would have caught it in production
-> *before* a user filed a ticket? ____________________________________________
+> *before* a user filed a ticket?
+> - **OPS-2201:** a per-route p95 latency panel/alert (e.g. alert if
+>   `/api/patients/search` p95 exceeds a few hundred ms) would have caught
+>   the missing index long before shift-change load; a `data_received`-
+>   per-route panel would have separately flagged the unbounded result size
+>   even before the index fix was tried.
+> - **OPS-2202:** a connection-pool saturation alert (e.g. `Threads_connected`
+>   approaching `connectionLimit`, or a metric on queued/waiting pool
+>   requests) would have caught the undersized pool directly, rather than
+>   waiting for a burst to expose it as "the DB looks idle but the app is
+>   stalled." A per-route CPU/event-loop-lag panel would have separately
+>   caught the payload-serialization bottleneck once the pool was fixed.
+> - **OPS-2203:** an alert on `Innodb_row_lock_time_avg` (or
+>   `Innodb_row_lock_waits`) crossing a fraction of the configured
+>   `innodb-lock-wait-timeout` would catch lock contention building up
+>   before it produces hard errors — this is a leading indicator, not just
+>   a post-mortem metric.
+> - **OPS-2204:** a `nodejs_heap_size_used_bytes` alert as it approaches
+>   `--max-old-space-size`, or simpler, a container memory-vs-limit panel
+>   (already present in this lab's Grafana dashboard — "API memory vs
+>   container limit (OOM watch)") with an alert threshold rather than just
+>   a visual panel, would have caught the climb well before the crash. A
+>   restart-count alert (any restart is notable) would catch it after the
+>   fact but before a second or third recurrence pages on-call again.
