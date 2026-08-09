@@ -255,37 +255,161 @@ running (0m30.7s), 00/50 VUs, 1500 complete and 0 interrupted iterations
 
 ### Hypothesis
 > Given the query is trivial and the DB is idle yet requests pile up, I think
-> the bottleneck is ________________________________________________________
-> because __________________________________________________________________.
+> the bottleneck is the application's MySQL connection pool — a small, fixed
+> number of reusable connections between the Node app and MySQL
+> because a query cannot execute until a request first acquires a free
+> connection from that pool. Under a sudden burst to 2000 concurrent
+> requests, only as many requests as there are pool slots can actually be
+> running a query against MySQL at once; the rest queue *inside the
+> application tier*, waiting for a connection to free up. From MySQL's point
+> of view it only ever sees a handful of concurrent trivial queries (hence
+> low CPU/disk — "the DB is bored"), while from the caller's point of view
+> most of the latency is time spent waiting in the pool's queue before the
+> query even starts. This also explains instant recovery once load drops:
+> once arrivals fall below the pool's service rate, the queue drains and
+> nothing needs repair.
 
 ### Observation (evidence)
 > Where is time spent between request arrival and query execution? Capture the
 > error codes and any queue/timeout evidence from logs and metrics:
 > ```
+> docker stats during reproduce-OPS-2202.js (2000-VU burst, connectionLimit=2):
+>   mysql-db:      CPU 0.83%   MEM 12.08% (473MiB/3.8GiB)   -- essentially idle
+>   capacity-api:  CPU 0.66%   MEM 36.70% (58.71MiB/160MiB) -- also idle
 >
+> k6 (200 VUs -> this ticket uses 2000 VUs, ramping-vus 0->2000 over 5s, held 30s):
+>   p95=3.38s  avg=1.08s  med=930ms  max=5.21s
+>   http_req_failed: 0.00% (0/52990) -- ticket also mentions 500s; not reproduced
+>                                        at connectionLimit=2, only latency
+>
+> api/database.js MYSQL_CONFIG: connectionLimit: 2, queueLimit: 0 (unlimited
+> queue depth -- explains 0% errors + high latency rather than fast rejections)
+>
+> EXPLAIN ANALYZE SELECT * FROM patients ORDER BY id DESC LIMIT 50;
+> -> Limit: 50 row(s) (actual time=0.859..1.73 rows=50 loops=1)
+>     -> Index scan on patients using PRIMARY (reverse) (actual time=0.856..1.5)
+> -- query itself is cheap and well-indexed; not the bottleneck.
 > ```
 | Metric                    | Value | vs. baseline |
 |---------------------------|-------|--------------|
-| Successful RPS (plateau)  |       |              |
-| p95 / p99 latency         |       |              |
-| Error / timeout rate      |       |              |
-| Avg service time per query (s) |  |              |
+| Successful RPS (plateau)  | 1620 req/s | vs. baseline 48.84 req/s (higher raw throughput, but severely degraded latency) |
+| p95 / p99 latency         | p95=3.38s (p99 not captured this run) | ~43x worse than baseline p95=78.26ms |
+| Error / timeout rate      | 0.00% (0/52990) | same as baseline -- but median request took 930ms, not truly healthy |
+| Avg service time per query (s) | ~0.00173s (1.73ms, measured via EXPLAIN ANALYZE, uncontended) | negligible -- confirms query cost is not the bottleneck |
 
 ### Root cause & mechanism
 > Explain the paradox: idle database, trivial query, stalled app. What finite
 > resource is being contended, and where does it live? Derive the *right* size
 > for that resource from your measured throughput and service time (state the
 > relationship you used):
-> - Measured avg service time W = ______ s
-> - Target throughput λ = ______ req/s
-> - Required capacity = ______  (show your working)
-> Why does making it arbitrarily large eventually stop helping? ______________
+>
+> **Mechanism: undersized application-side MySQL connection pool
+> (`connectionLimit: 2` in `api/database.js`).** A query cannot execute until
+> the request first acquires one of the pool's connections. With only 2
+> connections, at most 2 requests can be running a query against MySQL at any
+> instant, no matter how many requests have arrived. Every other request sits
+> in an in-process queue inside the pool library (`queueLimit: 0` = unbounded
+> queue, which is why we saw 0% errors rather than fast rejections -- everyone
+> waits instead of failing). This resolves the paradox precisely: MySQL only
+> ever sees ~2 concurrent trivial queries, so its CPU/disk stay flat ("the DB
+> is bored") -- but the *caller* experiences most of its latency as queueing
+> time inside the app tier, before the query even starts. This is confirmed
+> by `docker stats` showing both mysql-db (0.83% CPU) and capacity-api (0.66%
+> CPU) essentially idle even while k6 measured p95=3.38s -- neither machine
+> was doing meaningful work; requests were simply waiting in line.
+>
+> - Measured avg service time W = 0.00173 s (1.73ms, `EXPLAIN ANALYZE`,
+>   uncontended, primary-key index scan -- this query was never the problem)
+> - Target throughput λ = 1620 req/s (measured arrival/completion rate during
+>   the reproduction)
+> - Required capacity (Little's Law, L = λ x W) = 1620 x 0.00173 ≈ **2.8
+>   concurrent connections** needed on average just to keep up with steady
+>   arrivals -- already above the configured limit of 2.
+> - Theoretical max throughput of a pool of 2 = connections / W = 2 / 0.00173s
+>   ≈ **1156 req/s** -- a hard ceiling below the 1620 req/s of arrivals we
+>   measured, so queueing was mathematically guaranteed regardless of burst
+>   shape, not just a symptom of the sudden ramp.
+>
+> Why does making it arbitrarily large eventually stop helping? Raising
+> `connectionLimit` to 20 alone (with `LIMIT 50` still on `/recent`) improved
+> p95 (3.38s -> 2.63s) and confirmed via `SHOW STATUS LIKE
+> 'Max_used_connections'` (=21, essentially the full pool) that MySQL
+> accepted and used all of them without hitting its own `max_connections`
+> ceiling (151). But that alone did **not** fully resolve the incident, and
+> introduced a *new* failure mode: `docker stats` during that retest showed
+> capacity-api CPU spike to **173%** and memory climb to 120/160MiB (75%)
+> mid-run, and k6 reported a new 0.37% error rate (`connection reset by
+> peer`) plus a much worse tail (max=22.78s vs 5.21s before), with failures
+> clustering ~12-14s into the sustained 2000-VU load rather than at the
+> initial ramp. `RestartCount: 0` and clean logs ruled out an OOM-kill/
+> crash-restart loop -- the process stayed alive throughout. This pointed to
+> a **second, independent bottleneck**: with the connection pool no longer
+> the limiting factor, concurrency downstream became the new ceiling —
+> confirmed by testing directly (see Fix): each `/recent` response was
+> 18,145 bytes (50 rows, including a full unbounded `notes TEXT` field per
+> row); at 2000 concurrent requests that's ~36MB of JSON being built and
+> serialized on Node's single JS thread simultaneously, competing with
+> routing, the MySQL driver, and V8 garbage collection for the same thread —
+> `JSON.stringify` is synchronous and blocks the event loop, so this is real,
+> serial CPU work, not queueing. This is the same lesson as OPS-2201 in a
+> different shape: fixing one finite resource (connections) just exposed the
+> next one (event-loop/serialization time), and "arbitrarily large" doesn't
+> help once you've shifted the bottleneck to a resource that scaling a
+> connection-pool number can't touch.
 
 ### Fix & verify
-> The change you made: ______________________________________________________
-> New RPS: ______  New error rate: ______  New p95: ______
+> The change you made: two changes, both required — evidence showed the
+> first alone was insufficient, same pattern as OPS-2201:
+> 1. Raised `connectionLimit` (and `maxIdle`) from 2 to 20 in
+>    `api/database.js`, sized from the Little's Law calculation above (~2.8
+>    needed on average, ~7x headroom for burstiness, well under MySQL's own
+>    `max_connections=151`).
+> 2. Reduced `/api/patients/recent`'s query from `LIMIT 50` to `LIMIT 10` in
+>    `api/server.js`, shrinking per-response payload (and therefore
+>    serialization work) roughly 5x.
+>
+> **Step 1 alone (`connectionLimit=20`, `LIMIT 50`):** p95 3.38s -> 2.63s
+> (~22% better), but a *new* 0.37% error rate appeared (`connection reset by
+> peer`) and `docker stats` showed capacity-api CPU spike to 173%, memory to
+> 120/160MiB (75%) — a regression in kind, not just degree.
+>
+> **Step 1 + 2 together (`connectionLimit=20`, `LIMIT 10`), confirmed with
+> two separate reproduction runs:**
+> ```
+> Run 1: p95=1.52s  RPS=2779.6/s  errors=0.00%  data=330MB
+> Run 2: p95=1.25s  RPS=2722.3/s  errors=0.00%  data=323MB
+> Live docker stats mid-run (Run 2): capacity-api CPU=0.83%, MEM=78.38MiB/160MiB (49%)
+> ```
+> New p95: **~1.25-1.52s** (vs. broken 3.38s; vs. pool-only-fix 2.63s; vs.
+> baseline 78.26ms — still well above baseline, but a genuinely stable,
+> passing result)
+> New RPS: **~2722-2780 req/s** (vs. broken 1620 req/s, ~68-72% more
+> throughput)
+> New error rate: **0.00%** (was 0.37% after step 1 alone; threshold
+> `rate<0.05` now passes cleanly, not marginally)
+> CPU under load: **0.83%** (vs. 173% after step 1 alone) — confirms the
+> event-loop/serialization theory directly: shrinking payload size
+> eliminated the CPU spike, not just the symptom.
+>
+> Any trade-off introduced by your fix? The "recent patients" widget now
+> shows 10 patients instead of 50 — a real, visible reduction in
+> functionality for on-call staff glancing at recent admissions, not a free
+> win. This mirrors OPS-2201's `LIMIT` trade-off: a production version would
+> want the full 50 (or more) back via pagination or a lighter-weight column
+> selection (e.g. omitting `notes` from the list view, fetching it only on
+> detail-view) rather than permanently showing fewer patients. The
+> connection-pool increase carries the same MySQL-side overhead discussed in
+> OPS-2201's write-cost note, negligible at this scale.
+>
 > What upstream protection would make a burst degrade gracefully instead of
-> collapsing? _______________________________________________________________
+> collapsing? A **request queue with a hard cap and fast-fail** (e.g. reject
+> with 503 once N requests are already queued, instead of `queueLimit: 0`
+> letting the queue grow unbounded) would convert "everyone waits
+> indefinitely" into "some requests fail fast while others succeed quickly" --
+> better for callers overall, and it would have surfaced this ticket's "or
+> returns 500s" symptom explicitly instead of only as extreme latency. A
+> rate limiter or admission-control middleware in front of the API would
+> shed excess load before it reaches either the pool or the event loop.
 
 ---
 

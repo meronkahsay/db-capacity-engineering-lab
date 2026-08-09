@@ -19,12 +19,15 @@ const MYSQL_CONFIG = {
   password: process.env.MYSQL_PASSWORD || 'labpassword',
   database: process.env.MYSQL_DATABASE || 'capacity_lab',
 
-  // Keep the pool small so we don't overwhelm the database with connections.
+  // Sized from measured demand: Little's Law (L = lambda*W) with the
+  // reproduce-OPS-2202 burst (~1620 req/s, ~1.73ms/query) gives an average
+  // need of ~2.8 concurrent connections. 20 gives ~7x headroom for bursty
+  // arrivals without approaching MySQL's own max_connections ceiling (151).
   waitForConnections: true,
-  connectionLimit: 2,
+  connectionLimit: 20,
   queueLimit: 0,
   connectTimeout: 10_000,
-  maxIdle: 2,
+  maxIdle: 20,
   idleTimeout: 60_000,
   enableKeepAlive: true,
 };
