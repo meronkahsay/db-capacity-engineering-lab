@@ -246,6 +246,8 @@ running (0m30.7s), 00/50 VUs, 1500 complete and 0 interrupted iterations
 > index itself adds minor write-side overhead (B-tree maintenance on every
 > INSERT/UPDATE to `last_name`) and disk space — negligible at this write
 > volume, worth stating rather than ignoring.
+>
+> **Grafana evidence (post-fix):** [evidence/ops-2201/Screenshot 2026-08-09 at 23.09.41.png](../evidence/ops-2201/Screenshot%202026-08-09%20at%2023.09.41.png) — same 200-VU reproduction re-run after the fix, dashboard shows throughput reaching ~1.5K req/s (`/api/patients/search`, yellow line) with p95 latency staying low (~20-95ms) and memory/heap flat throughout — the same load that previously produced p95=11.11s and 46% throughput collapse.
 
 ---
 
@@ -790,6 +792,8 @@ running (0m30.7s), 00/50 VUs, 1500 complete and 0 interrupted iterations
 > array is also a client-side parsing change (read line-by-line instead of
 > `JSON.parse` on the whole body) -- appropriate for a streaming export, but
 > a breaking API change for any existing caller expecting the old shape.
+>
+> **Grafana evidence (post-fix):** [evidence/ops-2204/Screenshot 2026-08-09 at 23.19.28.png](../evidence/ops-2204/Screenshot%202026-08-09%20at%2023.19.28.png) — same 50-VU, 2-minute reproduction re-run after streaming + pagination. Throughput (green) climbs to ~125 req/s; the "API memory vs container limit (OOM watch)" panel — the exact panel this incident is about — stays flat throughout (RSS ~100-130MB, heap used ~40-45MB), never approaching the 160MB container limit that previously caused 13 crashes in the same test.
 
 ---
 
