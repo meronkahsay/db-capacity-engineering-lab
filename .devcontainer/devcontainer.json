@@ -11,16 +11,18 @@
     // Docker Engine inside the Codespace (not Docker Desktop) — required so
     // LocalStack itself and the app/MySQL containers can run.
     //
-    // version + mobyBuildxVersion both pinned (not "latest"): on Codespaces,
-    // "latest" for this feature resolves via a live remote lookup that failed
-    // twice with transient network errors during build (first buildx's own
-    // github.com fetch, then Moby's own "latest" resolution once buildx was
-    // pinned). Pinning both to explicit, confirmed-available versions removes
-    // the live-resolution step entirely — 0.10.4+azure-ubuntu22.04u1 is the
-    // newest version this exact Codespaces image actually listed as valid
-    // when the "latest" resolution failed and printed its candidate list.
+    // Only mobyBuildxVersion is pinned. That live "latest" resolution
+    // (fetching docker/buildx from github.com) is what actually failed with
+    // a DNS error during build — pinning it removes that specific live fetch.
+    // A prior attempt also pinned `version` to a guessed Moby engine version
+    // ("0.10.4+azure-ubuntu22.04u1"), which turned out to not exist at all
+    // for this OS/arch — the build's own error output listed the real
+    // available versions (29.x, 24.x, 20.10.x+azure...) and confirmed the
+    // guess was wrong. `version: "latest"` for the Moby engine itself was
+    // never the actual failure, so it's left alone rather than hand-pinned
+    // to another guess.
     "ghcr.io/devcontainers/features/docker-in-docker:2": {
-      "version": "0.10.4+azure-ubuntu22.04u1",
+      "version": "latest",
       "moby": true,
       "mobyBuildxVersion": "v0.36.1"
     },
