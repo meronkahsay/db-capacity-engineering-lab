@@ -11,26 +11,21 @@
     // Docker Engine inside the Codespace (not Docker Desktop) — required so
     // LocalStack itself and the app/MySQL containers can run.
     //
-    // mobyBuildxVersion pinned (not "latest"): the feature's own "latest"
-    // resolution does a live fetch from github.com/docker/buildx during the
-    // build, which failed once with "Could not resolve host: github.com" —
-    // a transient DNS blip during that particular build. Pinning removes the
-    // live-resolution step entirely, so a future flaky DNS moment can't fail
-    // container creation the same way.
+    // version + mobyBuildxVersion both pinned (not "latest"): on Codespaces,
+    // "latest" for this feature resolves via a live remote lookup that failed
+    // twice with transient network errors during build (first buildx's own
+    // github.com fetch, then Moby's own "latest" resolution once buildx was
+    // pinned). Pinning both to explicit, confirmed-available versions removes
+    // the live-resolution step entirely — 0.10.4+azure-ubuntu22.04u1 is the
+    // newest version this exact Codespaces image actually listed as valid
+    // when the "latest" resolution failed and printed its candidate list.
     "ghcr.io/devcontainers/features/docker-in-docker:2": {
-      "version": "latest",
+      "version": "0.10.4+azure-ubuntu22.04u1",
       "moby": true,
       "mobyBuildxVersion": "v0.36.1"
     },
     "ghcr.io/devcontainers/features/node:1": {
       "version": "20"
-    },
-    // OpenTofu, not Terraform CLI — matches the group platform's convention
-    // (README.md: "OpenTofu (tofu), Terraform >= 1.10").
-    "ghcr.io/devcontainers/features/terraform:1": {
-      "version": "latest",
-      "tflint": "latest",
-      "installTFsec": false
     },
     "ghcr.io/devcontainers/features/aws-cli:1": {
       "version": "latest"
@@ -40,10 +35,26 @@
     }
   },
 
-  // localstack, terraform-local (tflocal), and awscli-local (awslocal) are
-  // pip packages, not a devcontainer feature — install them once at create
-  // time so every codespace from this config has them without a manual step.
-  "postCreateCommand": "pip install --user localstack terraform-local 'awscli-local[ver1]' && pip install --user zizmor",
+  // OpenTofu (not Terraform CLI) via the official installer script, matching
+  // the group platform's convention (README.md: "OpenTofu (tofu), Terraform
+  // >= 1.10"). The devcontainers/features "terraform" feature installs real
+  // Terraform, not OpenTofu, and has no OpenTofu option — checked its README
+  // directly rather than assume — so it's not used here.
+  //
+  // localstack, terraform-local (tflocal — the tofu/terraform-aware
+  // LocalStack wrapper), and awscli-local (awslocal) are pip packages, not a
+  // devcontainer feature — install them once at create time so every
+  // codespace from this config has them without a manual step.
+  "postCreateCommand": "curl --proto '=https' --tlsv1.2 -fsSL https://get.opentofu.org/install-opentofu.sh -o /tmp/install-opentofu.sh && chmod +x /tmp/install-opentofu.sh && sudo /tmp/install-opentofu.sh --install-method deb && rm -f /tmp/install-opentofu.sh && curl -sSLo /tmp/tflint.zip https://github.com/terraform-linters/tflint/releases/download/v0.64.0/tflint_linux_amd64.zip && unzip -o /tmp/tflint.zip -d /tmp && sudo mv /tmp/tflint /usr/local/bin/tflint && rm -f /tmp/tflint.zip && pip install --user localstack terraform-local 'awscli-local[ver1]' zizmor",
+
+  // tflocal defaults to invoking `terraform` unless TF_CMD is set — checked
+  // LocalStack's own docs directly rather than assume. Only `tofu` is
+  // installed here (no real Terraform CLI), so this is required, not
+  // optional, or `tflocal apply` would fail looking for a binary that
+  // doesn't exist in this devcontainer.
+  "remoteEnv": {
+    "TF_CMD": "tofu"
+  },
 
   "forwardPorts": [3000, 3001, 9090, 4566],
   "portsAttributes": {
