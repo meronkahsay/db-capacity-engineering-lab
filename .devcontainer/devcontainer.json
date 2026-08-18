@@ -1,0 +1,59 @@
+{
+  "name": "regional-health-rehost",
+  // Ubuntu 22.04 base — matches the assignment's "native Linux" requirement.
+  // LocalStack's Docker-backed EC2/RDS emulation needs a real Linux Docker
+  // bridge network, which Docker Desktop on macOS does not expose (see
+  // ASSIGNMENT.md "Linux is required"). Codespaces runs this devcontainer on
+  // a real Linux VM, so the bridge network is genuinely reachable.
+  "image": "mcr.microsoft.com/devcontainers/base:jammy",
+
+  "features": {
+    // Docker Engine inside the Codespace (not Docker Desktop) — required so
+    // LocalStack itself and the app/MySQL containers can run.
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "latest",
+      "moby": true
+    },
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    },
+    // OpenTofu, not Terraform CLI — matches the group platform's convention
+    // (README.md: "OpenTofu (tofu), Terraform >= 1.10").
+    "ghcr.io/devcontainers/features/terraform:1": {
+      "version": "latest",
+      "tflint": "latest",
+      "installTFsec": false
+    },
+    "ghcr.io/devcontainers/features/aws-cli:1": {
+      "version": "latest"
+    },
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.12"
+    }
+  },
+
+  // localstack, terraform-local (tflocal), and awscli-local (awslocal) are
+  // pip packages, not a devcontainer feature — install them once at create
+  // time so every codespace from this config has them without a manual step.
+  "postCreateCommand": "pip install --user localstack terraform-local 'awscli-local[ver1]' && pip install --user zizmor",
+
+  "forwardPorts": [3000, 3001, 9090, 4566],
+  "portsAttributes": {
+    "3000": { "label": "capacity-api" },
+    "3001": { "label": "Grafana" },
+    "9090": { "label": "Prometheus" },
+    "4566": { "label": "LocalStack edge port" }
+  },
+
+  // 4-core / 16GB is the assignment's *recommended* size (2-core is the
+  // minimum but the brief specifically warns 2202's ~2000-VU k6 replay will
+  // bottleneck and skew latency numbers on 2 cores). Codespaces machine type
+  // is chosen at creation time via the UI ("... -> Change machine type"),
+  // not enforceable from this file — noted here so it isn't missed.
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "16gb"
+  },
+
+  "remoteUser": "vscode"
+}
