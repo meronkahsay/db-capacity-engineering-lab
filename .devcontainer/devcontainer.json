@@ -10,9 +10,17 @@
   "features": {
     // Docker Engine inside the Codespace (not Docker Desktop) — required so
     // LocalStack itself and the app/MySQL containers can run.
+    //
+    // mobyBuildxVersion pinned (not "latest"): the feature's own "latest"
+    // resolution does a live fetch from github.com/docker/buildx during the
+    // build, which failed once with "Could not resolve host: github.com" —
+    // a transient DNS blip during that particular build. Pinning removes the
+    // live-resolution step entirely, so a future flaky DNS moment can't fail
+    // container creation the same way.
     "ghcr.io/devcontainers/features/docker-in-docker:2": {
       "version": "latest",
-      "moby": true
+      "moby": true,
+      "mobyBuildxVersion": "v0.36.1"
     },
     "ghcr.io/devcontainers/features/node:1": {
       "version": "20"
