@@ -11,20 +11,19 @@
     // Docker Engine inside the Codespace (not Docker Desktop) — required so
     // LocalStack itself and the app/MySQL containers can run.
     //
-    // Only mobyBuildxVersion is pinned. That live "latest" resolution
-    // (fetching docker/buildx from github.com) is what actually failed with
-    // a DNS error during build — pinning it removes that specific live fetch.
-    // A prior attempt also pinned `version` to a guessed Moby engine version
-    // ("0.10.4+azure-ubuntu22.04u1"), which turned out to not exist at all
-    // for this OS/arch — the build's own error output listed the real
-    // available versions (29.x, 24.x, 20.10.x+azure...) and confirmed the
-    // guess was wrong. `version: "latest"` for the Moby engine itself was
-    // never the actual failure, so it's left alone rather than hand-pinned
-    // to another guess.
+    // Root cause of every prior build failure here, found by reading the
+    // actual error line instead of guessing from a truncated version list:
+    // "No full or partial moby-buildx version match found for 'v0.36.1'" --
+    // this feature's mobyBuildxVersion does NOT take the upstream
+    // docker/buildx GitHub release tag format ("v0.36.1"); it takes this
+    // feature's own distro-specific package version string
+    // ("0.36.1-ubuntu22.04uN", no "v" prefix). The error's own printed
+    // candidate list is the source of truth here, not a guess --
+    // 0.36.1-ubuntu22.04u2 is the newest entry in that list.
     "ghcr.io/devcontainers/features/docker-in-docker:2": {
       "version": "latest",
       "moby": true,
-      "mobyBuildxVersion": "v0.36.1"
+      "mobyBuildxVersion": "0.36.1-ubuntu22.04u2"
     },
     "ghcr.io/devcontainers/features/node:1": {
       "version": "20"
