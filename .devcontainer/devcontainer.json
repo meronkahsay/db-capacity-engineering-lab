@@ -1,0 +1,80 @@
+{
+  "name": "regional-health-rehost",
+  // Ubuntu 22.04 base — matches the assignment's "native Linux" requirement.
+  // LocalStack's Docker-backed EC2/RDS emulation needs a real Linux Docker
+  // bridge network, which Docker Desktop on macOS does not expose (see
+  // ASSIGNMENT.md "Linux is required"). Codespaces runs this devcontainer on
+  // a real Linux VM, so the bridge network is genuinely reachable.
+  "image": "mcr.microsoft.com/devcontainers/base:jammy",
+
+  "features": {
+    // Docker Engine inside the Codespace (not Docker Desktop) — required so
+    // LocalStack itself and the app/MySQL containers can run.
+    //
+    // Only mobyBuildxVersion is pinned. That live "latest" resolution
+    // (fetching docker/buildx from github.com) is what actually failed with
+    // a DNS error during build — pinning it removes that specific live fetch.
+    // A prior attempt also pinned `version` to a guessed Moby engine version
+    // ("0.10.4+azure-ubuntu22.04u1"), which turned out to not exist at all
+    // for this OS/arch — the build's own error output listed the real
+    // available versions (29.x, 24.x, 20.10.x+azure...) and confirmed the
+    // guess was wrong. `version: "latest"` for the Moby engine itself was
+    // never the actual failure, so it's left alone rather than hand-pinned
+    // to another guess.
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "latest",
+      "moby": true,
+      "mobyBuildxVersion": "v0.36.1"
+    },
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    },
+    "ghcr.io/devcontainers/features/aws-cli:1": {
+      "version": "latest"
+    },
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.12"
+    }
+  },
+
+  // OpenTofu (not Terraform CLI) via the official installer script, matching
+  // the group platform's convention (README.md: "OpenTofu (tofu), Terraform
+  // >= 1.10"). The devcontainers/features "terraform" feature installs real
+  // Terraform, not OpenTofu, and has no OpenTofu option — checked its README
+  // directly rather than assume — so it's not used here.
+  //
+  // localstack, terraform-local (tflocal — the tofu/terraform-aware
+  // LocalStack wrapper), and awscli-local (awslocal) are pip packages, not a
+  // devcontainer feature — install them once at create time so every
+  // codespace from this config has them without a manual step.
+  "postCreateCommand": "curl --proto '=https' --tlsv1.2 -fsSL https://get.opentofu.org/install-opentofu.sh -o /tmp/install-opentofu.sh && chmod +x /tmp/install-opentofu.sh && sudo /tmp/install-opentofu.sh --install-method deb && rm -f /tmp/install-opentofu.sh && curl -sSLo /tmp/tflint.zip https://github.com/terraform-linters/tflint/releases/download/v0.64.0/tflint_linux_amd64.zip && unzip -o /tmp/tflint.zip -d /tmp && sudo mv /tmp/tflint /usr/local/bin/tflint && rm -f /tmp/tflint.zip && pip install --user localstack terraform-local 'awscli-local[ver1]' zizmor",
+
+  // tflocal defaults to invoking `terraform` unless TF_CMD is set — checked
+  // LocalStack's own docs directly rather than assume. Only `tofu` is
+  // installed here (no real Terraform CLI), so this is required, not
+  // optional, or `tflocal apply` would fail looking for a binary that
+  // doesn't exist in this devcontainer.
+  "remoteEnv": {
+    "TF_CMD": "tofu"
+  },
+
+  "forwardPorts": [3000, 3001, 9090, 4566],
+  "portsAttributes": {
+    "3000": { "label": "capacity-api" },
+    "3001": { "label": "Grafana" },
+    "9090": { "label": "Prometheus" },
+    "4566": { "label": "LocalStack edge port" }
+  },
+
+  // 4-core / 16GB is the assignment's *recommended* size (2-core is the
+  // minimum but the brief specifically warns 2202's ~2000-VU k6 replay will
+  // bottleneck and skew latency numbers on 2 cores). Codespaces machine type
+  // is chosen at creation time via the UI ("... -> Change machine type"),
+  // not enforceable from this file — noted here so it isn't missed.
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "16gb"
+  },
+
+  "remoteUser": "vscode"
+}
