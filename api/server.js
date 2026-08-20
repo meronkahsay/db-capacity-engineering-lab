@@ -6,6 +6,8 @@
  * Express API for the Regional Health admissions & patient-lookup service.
  *
  * Endpoints:
+ *   GET  /healthz                    Liveness -- is the process alive?
+ *   GET  /readyz                     Readiness -- 503 if DB/secret/pool isn't OK
  *   GET  /api/patients/recent        Recent patients widget
  *   GET  /api/patients/search        Patient lookup by last name
  *   POST /api/hospitals/:id/admit    Admit a patient (decrement bed count)
@@ -16,7 +18,7 @@
 
 const express = require('express');
 const client = require('prom-client');
-const { getPool, getMongo } = require('./database');
+const { getPool, getMongo, checkDbReady } = require('./database');
 
 const app = express();
 app.use(express.json());
@@ -67,9 +69,29 @@ app.use((req, res, next) => {
 });
 
 // ---------------------------------------------------------------------------
-// Health & metrics
+// Health & metrics (C4) — liveness and readiness answer different questions.
+// nginx's readiness gate (auth_request in nginx.conf.tftpl) proxies straight
+// to /readyz; a 503 here means the instance receives no business traffic,
+// without restarting the process.
 // ---------------------------------------------------------------------------
-app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+
+// Liveness: is the process alive/hung? A wrong answer here means "restart
+// the instance." Deliberately does NOT touch the DB or Secrets Manager --
+// those failures are /readyz's job, not liveness's.
+app.get('/healthz', (_req, res) => res.json({ status: 'ok' }));
+
+// Readiness: can this instance serve a request right now? A wrong answer
+// here means "stop routing traffic, don't restart." 503 when the secret
+// failed to resolve, the DB is unreachable, or the pool is saturated --
+// checkDbReady's three failure modes map directly to those three C4 cases.
+app.get('/readyz', async (_req, res) => {
+  const result = await checkDbReady();
+  if (result.ready) {
+    res.json({ status: 'ready' });
+  } else {
+    res.status(503).json({ status: 'not_ready', reason: result.reason });
+  }
+});
 
 app.get('/metrics', async (_req, res) => {
   res.set('Content-Type', register.contentType);
@@ -81,7 +103,7 @@ app.get('/metrics', async (_req, res) => {
 // ---------------------------------------------------------------------------
 app.get('/api/patients/recent', async (_req, res) => {
   try {
-    const pool = getPool();
+    const pool = await getPool();
     const [rows] = await pool.query(
       'SELECT * FROM patients ORDER BY id DESC LIMIT 10'
     );
@@ -98,7 +120,7 @@ app.get('/api/patients/recent', async (_req, res) => {
 app.get('/api/patients/search', async (req, res) => {
   const lastName = req.query.lastName || '';
   try {
-    const pool = getPool();
+    const pool = await getPool();
     const [rows] = await pool.query(
       'SELECT * FROM patients WHERE last_name = ? LIMIT 50',
       [lastName]
@@ -119,7 +141,7 @@ app.get('/api/patients/search', async (req, res) => {
 // ---------------------------------------------------------------------------
 app.post('/api/hospitals/:id/admit', async (req, res) => {
   const hospitalId = Number(req.params.id);
-  const pool = getPool();
+  const pool = await getPool();
   let conn;
   try {
     conn = await pool.getConnection();
@@ -170,8 +192,8 @@ function notifyBedRegistry(_hospitalId) {
 // ---------------------------------------------------------------------------
 const EXPORT_PAGE_SIZE = 2000;
 
-app.get('/api/patients/export', (req, res) => {
-  const pool = getPool();
+app.get('/api/patients/export', async (req, res) => {
+  const pool = await getPool();
   const after = Number(req.query.after) || 0;
   // Headers must be declared before the body starts streaming (res.write
   // flushes headers on first call), so cursor/has-more metadata is sent as
