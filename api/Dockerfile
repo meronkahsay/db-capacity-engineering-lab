@@ -13,7 +13,16 @@ FROM node:22-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172
 WORKDIR /usr/src/app
 
 COPY package.json ./
-RUN npm install --omit=dev
+RUN npm install --omit=dev \
+    # npm's own bundled tooling (tar/brace-expansion/picomatch/sigstore/etc.)
+    # carries its own HIGH/CRITICAL CVEs -- confirmed via `trivy image
+    # --ignore-unfixed` that these packages live at
+    # /usr/local/lib/node_modules/npm/node_modules/*, part of the base
+    # image's npm install, not this app's package-lock.json. The runtime
+    # only ever runs `node server.js` (never `npm`/`npx` after build), so
+    # remove npm itself once install is done. (Same fix independently
+    # confirmed against Rigbe's Dockerfile in the same cohort.)
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 
 COPY . .
 
