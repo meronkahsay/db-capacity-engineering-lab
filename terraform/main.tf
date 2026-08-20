@@ -9,11 +9,11 @@
 # =============================================================================
 
 locals {
-  # Pinned to regional-health-platform@main as of 2026-08-18 (after the
-  # RDS->Aiven switch, service hardening, and golden-ci Aiven-secrets fix).
-  # Update this SHA (and re-run `tofu plan`) when a group module change needs
-  # picking up here.
-  platform_ref = "c95c942fc72ef7018399118305f3d90a9ecb524a"
+  # Pinned to regional-health-platform@main as of 2026-08-20 (after the
+  # Aiven CA-cert wiring fix, PR #9 -- modules/service now writes db_ca_cert
+  # to /etc/app/db-ca.pem and exports DB_CA_CERT_PATH). Update this SHA (and
+  # re-run `tofu plan`) when a group module change needs picking up here.
+  platform_ref = "4ebcd9bdf856b4b97796041223db025b5e6f78af"
 }
 
 module "data" {
@@ -45,6 +45,12 @@ module "service" {
   secret_arn  = module.data.secret_arn
   db_endpoint = module.data.db_endpoint
   db_port     = module.data.db_port
+
+  # Aiven's CA cert — public root cert, not secret (same reasoning
+  # modules/data uses to keep it out of the Secrets Manager envelope).
+  # modules/service writes this to /etc/app/db-ca.pem on the instance and
+  # exports DB_CA_CERT_PATH, matching database.js's fallback default exactly.
+  db_ca_cert = file("${path.module}/aiven-ca.pem")
 
   aws_endpoint_url = var.aws_endpoint_url
   aws_region       = var.aws_region

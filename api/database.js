@@ -22,11 +22,13 @@ const fs = require('fs');
 const DB_SECRET_ARN = process.env.DB_SECRET_ARN;
 const DB_HOST = process.env.DB_HOST;
 const DB_PORT = Number(process.env.DB_PORT || 3306);
-// Aiven's CA cert (public root cert, not secret) — baked into the image or
-// mounted by modules/service. Falls back to no TLS only when the path isn't
-// set/present, so local dev against a non-TLS MySQL (A1's docker-compose)
-// keeps working unchanged.
-const DB_CA_CERT_PATH = process.env.DB_CA_CERT_PATH || '/etc/regional-health/aiven-ca.pem';
+// Aiven's CA cert (public root cert, not secret). modules/service's
+// user-data.sh.tftpl always exports DB_CA_CERT_PATH when db_ca_cert is set,
+// writing the file to /etc/app/db-ca.pem on the instance -- match that
+// exact path as the fallback default here too. Falls back to no TLS only
+// when the path isn't set/present, so local dev against a non-TLS MySQL
+// (A1's docker-compose) keeps working unchanged.
+const DB_CA_CERT_PATH = process.env.DB_CA_CERT_PATH || '/etc/app/db-ca.pem';
 
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://mongo-db:27017';
 const MONGO_DB_NAME = process.env.MONGO_DB || 'capacity_lab';
