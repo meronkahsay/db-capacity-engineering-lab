@@ -11,13 +11,11 @@ name: ci
 # matching the group workflow's own documented run_apply convention.
 # =============================================================================
 
-# Explicit, minimal token permissions (zizmor excessive-permissions: without
-# this, GitHub defaults the GITHUB_TOKEN to broad read/write access). Neither
-# this workflow nor the reusable golden-ci.yml it calls needs to write
-# anything with this token -- golden-ci.yml's own jobs each additionally
-# scope down to contents: read; this is the outer default for the caller.
-permissions:
-  contents: read
+# C5 red-PR (zizmor): the explicit `permissions: contents: read` block that
+# normally lives here has been deliberately removed to prove the zizmor gate
+# catches excessive-permissions (GitHub defaults GITHUB_TOKEN to broad
+# read/write without it). The follow-up commit restores it and shows CI
+# green again.
 
 on:
   pull_request:
