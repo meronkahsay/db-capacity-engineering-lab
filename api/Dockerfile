@@ -1,9 +1,14 @@
 # Node.js API image for the Regional Health service.
 #
-# Base pinned by digest (C5: "base pinned by digest") -- the tag node:20-slim
-# currently resolves to this digest; re-pin deliberately on a base image bump,
-# not silently.
-FROM node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0
+# node:22-slim, not 20-slim (package.json only requires >=18, so 22 is
+# compatible): checked Docker Hub's API directly rather than assume --
+# node:20-slim was last rebuilt 2026-04-22 (stale), node:22-slim 2026-08-05.
+# That ~4-month gap in Debian security patches is what produced 36 findings
+# (29 HIGH, 7 CRITICAL) in `trivy image`, almost all OS-level CVEs in the
+# base layer, not app code -- confirmed via a local `trivy image` run before
+# switching, not guessed. Base pinned by digest (C5: "base pinned by
+# digest") -- re-pin deliberately on a base image bump, not silently.
+FROM node:22-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436
 
 WORKDIR /usr/src/app
 
@@ -20,9 +25,9 @@ COPY . .
 # which never needs a mysql CLI at runtime.
 
 # Run as the image's built-in non-root user, not root (C5 / trivy DS-0002:
-# "Specify at least 1 USER command ... with non-root user"). node:20-slim
-# ships a real `node` user (uid 1000) -- confirmed directly
-# (`docker run --rm node:20-slim id node`) rather than assumed.
+# "Specify at least 1 USER command ... with non-root user"). Official Node
+# images ship a real `node` user (uid 1000) -- confirmed directly against
+# node:22-slim (`docker run --rm node:22-slim id node`) rather than assumed.
 USER node
 
 EXPOSE 3000
