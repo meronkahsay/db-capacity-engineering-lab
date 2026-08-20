@@ -1,0 +1,32 @@
+name: ci
+
+# =============================================================================
+# Calls the group platform's reusable golden-ci.yml (gitleaks -> trivy config
+# -> zizmor -> docker build -> trivy image -> tag AMI -> tflocal apply).
+# Pinned to the same regional-health-platform commit as terraform/main.tf's
+# module sources — keep both refs in sync when bumping.
+#
+# run_apply is false on every PR (scan gates only — no LOCALSTACK_AUTH_TOKEN
+# needed for a PR from outside this repo) and true only on push to main,
+# matching the group workflow's own documented run_apply convention.
+# =============================================================================
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  ci:
+    uses: nebyathhailu/regional-health-platform/.github/workflows/golden-ci.yml@c95c942fc72ef7018399118305f3d90a9ecb524a
+    with:
+      app_dir: api
+      image_name: capacity-api
+      terraform_dir: terraform
+      run_apply: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    secrets:
+      localstack_auth_token: ${{ secrets.LOCALSTACK_AUTH_TOKEN }}
+      aiven_host: ${{ secrets.AIVEN_HOST }}
+      aiven_port: ${{ secrets.AIVEN_PORT }}
+      aiven_password: ${{ secrets.AIVEN_PASSWORD }}
