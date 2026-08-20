@@ -11,6 +11,14 @@ name: ci
 # matching the group workflow's own documented run_apply convention.
 # =============================================================================
 
+# Explicit, minimal token permissions (zizmor excessive-permissions: without
+# this, GitHub defaults the GITHUB_TOKEN to broad read/write access). Neither
+# this workflow nor the reusable golden-ci.yml it calls needs to write
+# anything with this token -- golden-ci.yml's own jobs each additionally
+# scope down to contents: read; this is the outer default for the caller.
+permissions:
+  contents: read
+
 on:
   pull_request:
     branches: [main]
@@ -19,7 +27,10 @@ on:
 
 jobs:
   ci:
-    uses: nebyathhailu/regional-health-platform/.github/workflows/golden-ci.yml@c95c942fc72ef7018399118305f3d90a9ecb524a
+    # Pinned to the same regional-health-platform commit as
+    # terraform/main.tf's platform_ref local -- keep both in sync when
+    # bumping either one.
+    uses: nebyathhailu/regional-health-platform/.github/workflows/golden-ci.yml@4ebcd9bdf856b4b97796041223db025b5e6f78af
     with:
       app_dir: api
       image_name: capacity-api
