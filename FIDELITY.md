@@ -90,6 +90,41 @@ everything through the last colon before passing it to the resource — a
 value that's already a bare `ami-<hex>` id passes through unchanged, so the
 same Terraform works against a real AMI id with no branch.
 
+## 7. Docker-backed EC2 needs the full localstack-ec2/ tag, not the AWS-style bare id
+
+Hit live during a real `tflocal apply` (2026-08-21, see
+`evidence/01-iac/README.md` for the full writeup). `aws_instance.app`
+failed with `couldn't find resource`, and LocalStack's own logs showed
+`ec2.DescribeImages => 400 (InvalidAMIID.NotFound)`.
+
+`modules/service/main.tf` strips the CI-computed AMI tag
+(`localstack-ec2/<name>:ami-<sha12>`) down to a bare `ami-<sha12>` before
+passing it to `aws_instance.ami`, reasoning that real AWS's
+`DescribeImages` only accepts the bare form. That's correct for real AWS —
+but LocalStack's Docker-backed EC2 emulation resolves the AMI by looking
+for a **Docker image whose repo:tag exactly matches the full string**
+(`localstack-ec2/<name>:ami-<sha12>`), so the stripped bare id can never
+resolve to anything on LocalStack, regardless of what's tagged locally.
+
+Confirmed directly, not guessed: `docker images` showed the image present
+under the correct `localstack-ec2/capacity-api:ami-<sha12>` tag;
+`docker inspect localstack-main` confirmed `/var/run/docker.sock` was
+correctly mounted (ruling out a Docker-in-Docker isolation issue);
+`docker logs localstack-main` showed the exact `DescribeImages` 400 at the
+moment of instance creation.
+
+The group's own `golden-ci.yml` `tflocal-apply` job appears to have the
+same gap for a different reason: it builds and uploads the image as a
+GitHub Actions artifact in the separate `docker-build` job, but the
+`tflocal-apply` job — which starts its own fresh LocalStack — has no step
+that loads that image tarball back into Docker before calling `tflocal
+apply`. `run_apply: true` only fires on push-to-main, so this path may
+never have been exercised end-to-end.
+
+**Real-AWS behavior:** a real AMI id (`ami-0abcd1234...`) resolves via the
+real EC2 API regardless of any Docker image state — this entire class of
+failure doesn't exist off LocalStack.
+
 ---
 
 None of the above required weakening the Terraform to work around

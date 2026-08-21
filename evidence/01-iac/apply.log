@@ -1,0 +1,135 @@
+module.data.aws_secretsmanager_secret.db: Creating...
+module.service.aws_security_group.app: Creating...
+module.data.aws_secretsmanager_secret.db: Creation complete after 0s [id=arn:aws:secretsmanager:us-east-1:000000000000:secret:regional-health/capacity-api/db-bmUluW]
+module.data.aws_secretsmanager_secret_version.db: Creating...
+module.data.aws_secretsmanager_secret_version.db: Creation complete after 0s [id=arn:aws:secretsmanager:us-east-1:000000000000:secret:regional-health/capacity-api/db-bmUluW|terraform-20260821064220480200000002]
+module.service.aws_security_group.app: Creation complete after 1s [id=sg-2373d0b7f17ff0a5e]
+module.service.aws_instance.app: Creating...
+
+Planning failed. OpenTofu encountered an error while generating this plan.
+
+module.service.data.aws_vpc.default: Reading...
+module.data.aws_secretsmanager_secret.db: Refreshing state... [id=arn:aws:secretsmanager:us-east-1:000000000000:secret:regional-health/capacity-api/db-bmUluW]
+module.data.aws_secretsmanager_secret_version.db: Refreshing state... [id=arn:aws:secretsmanager:us-east-1:000000000000:secret:regional-health/capacity-api/db-bmUluW|terraform-20260821064220480200000002]
+module.service.data.aws_vpc.default: Read complete after 0s [id=vpc-fae02bfe6984c2155]
+module.service.data.aws_subnets.default: Reading...
+module.service.aws_security_group.app: Refreshing state... [id=sg-2373d0b7f17ff0a5e]
+module.service.data.aws_subnets.default: Read complete after 0s [id=us-east-1]
+
+OpenTofu used the selected providers to generate the following execution
+plan. Resource actions are indicated with the following symbols:
+  + create
+
+OpenTofu will perform the following actions:
+
+  # module.service.aws_instance.app will be created
+  + resource "aws_instance" "app" {
+      + ami                                  = "ami-e7dfd6c45c69"
+      + arn                                  = (known after apply)
+      + associate_public_ip_address          = (known after apply)
+      + availability_zone                    = (known after apply)
+      + cpu_core_count                       = (known after apply)
+      + cpu_threads_per_core                 = (known after apply)
+      + disable_api_stop                     = (known after apply)
+      + disable_api_termination              = (known after apply)
+      + ebs_optimized                        = (known after apply)
+      + enable_primary_ipv6                  = (known after apply)
+      + get_password_data                    = false
+      + host_id                              = (known after apply)
+      + host_resource_group_arn              = (known after apply)
+      + iam_instance_profile                 = (known after apply)
+      + id                                   = (known after apply)
+      + instance_initiated_shutdown_behavior = (known after apply)
+      + instance_lifecycle                   = (known after apply)
+      + instance_state                       = (known after apply)
+      + instance_type                        = "t3.small"
+      + ipv6_address_count                   = (known after apply)
+      + ipv6_addresses                       = (known after apply)
+      + key_name                             = (known after apply)
+      + monitoring                           = (known after apply)
+      + outpost_arn                          = (known after apply)
+      + password_data                        = (known after apply)
+      + placement_group                      = (known after apply)
+      + placement_partition_number           = (known after apply)
+      + primary_network_interface_id         = (known after apply)
+      + private_dns                          = (known after apply)
+      + private_ip                           = (known after apply)
+      + public_dns                           = (known after apply)
+      + public_ip                            = (known after apply)
+      + secondary_private_ips                = (known after apply)
+      + security_groups                      = (known after apply)
+      + source_dest_check                    = true
+      + spot_instance_request_id             = (known after apply)
+      + subnet_id                            = "subnet-9559f92bdc3e1aec2"
+      + tags                                 = {
+          + "Name"    = "devops-g1-ls-capacity-api-app"
+          + "Project" = "regional-health"
+          + "Service" = "capacity-api"
+        }
+      + tags_all                             = {
+          + "Name"    = "devops-g1-ls-capacity-api-app"
+          + "Project" = "regional-health"
+          + "Service" = "capacity-api"
+        }
+      + tenancy                              = (known after apply)
+      + user_data                            = "1059e1af9e3c149884a12c08cc188863d64f99cc"
+      + user_data_base64                     = (known after apply)
+      + user_data_replace_on_change          = false
+      + vpc_security_group_ids               = [
+          + "sg-2373d0b7f17ff0a5e",
+        ]
+
+      + capacity_reservation_specification (known after apply)
+
+      + cpu_options (known after apply)
+
+      + ebs_block_device (known after apply)
+
+      + enclave_options (known after apply)
+
+      + ephemeral_block_device (known after apply)
+
+      + instance_market_options (known after apply)
+
+      + maintenance_options (known after apply)
+
+      + metadata_options {
+          + http_endpoint               = "enabled"
+          + http_protocol_ipv6          = "disabled"
+          + http_put_response_hop_limit = (known after apply)
+          + http_tokens                 = "required"
+          + instance_metadata_tags      = (known after apply)
+        }
+
+      + network_interface (known after apply)
+
+      + private_dns_name_options (known after apply)
+
+      + root_block_device {
+          + delete_on_termination = true
+          + device_name           = (known after apply)
+          + encrypted             = true
+          + iops                  = (known after apply)
+          + kms_key_id            = (known after apply)
+          + tags_all              = (known after apply)
+          + throughput            = (known after apply)
+          + volume_id             = (known after apply)
+          + volume_size           = 8
+          + volume_type           = (known after apply)
+        }
+    }
+
+Plan: 1 to add, 0 to change, 0 to destroy.
+
+Changes to Outputs:
+  + instance_id         = (known after apply)
+  + instance_private_ip = (known after apply)
+module.service.aws_instance.app: Creating...
+╷
+│ Error: collecting instance settings: couldn't find resource
+│
+│   with module.service.aws_instance.app,
+│   on .terraform/modules/service/terraform/modules/service/main.tf line 121, in resource "aws_instance" "app":
+│  121: resource "aws_instance" "app" {
+│
+╵

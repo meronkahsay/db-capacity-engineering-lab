@@ -1,0 +1,150 @@
+module.service.data.aws_vpc.default: Reading...
+module.data.aws_secretsmanager_secret.db: Refreshing state... [id=arn:aws:secretsmanager:us-east-1:000000000000:secret:regional-health/capacity-api/db-bmUluW]
+module.data.aws_secretsmanager_secret_version.db: Refreshing state... [id=arn:aws:secretsmanager:us-east-1:000000000000:secret:regional-health/capacity-api/db-bmUluW|terraform-20260821064220480200000002]
+module.service.data.aws_vpc.default: Read complete after 0s [id=vpc-fae02bfe6984c2155]
+module.service.data.aws_subnets.default: Reading...
+module.service.aws_security_group.app: Refreshing state... [id=sg-2373d0b7f17ff0a5e]
+module.service.data.aws_subnets.default: Read complete after 0s [id=us-east-1]
+
+OpenTofu used the selected providers to generate the following execution
+plan. Resource actions are indicated with the following symbols:
+  - destroy
+
+OpenTofu will perform the following actions:
+
+  # module.data.aws_secretsmanager_secret.db will be destroyed
+  - resource "aws_secretsmanager_secret" "db" {
+      - arn                            = "arn:aws:secretsmanager:us-east-1:000000000000:secret:regional-health/capacity-api/db-bmUluW" -> null
+      - force_overwrite_replica_secret = false -> null
+      - id                             = "arn:aws:secretsmanager:us-east-1:000000000000:secret:regional-health/capacity-api/db-bmUluW" -> null
+      - name                           = "regional-health/capacity-api/db" -> null
+      - recovery_window_in_days        = 0 -> null
+      - tags                           = {
+          - "Name"    = "regional-health/capacity-api/db"
+          - "Project" = "regional-health"
+          - "Service" = "capacity-api"
+        } -> null
+      - tags_all                       = {
+          - "Name"    = "regional-health/capacity-api/db"
+          - "Project" = "regional-health"
+          - "Service" = "capacity-api"
+        } -> null
+    }
+
+  # module.data.aws_secretsmanager_secret_version.db will be destroyed
+  - resource "aws_secretsmanager_secret_version" "db" {
+      - arn              = "arn:aws:secretsmanager:us-east-1:000000000000:secret:regional-health/capacity-api/db-bmUluW" -> null
+      - id               = "arn:aws:secretsmanager:us-east-1:000000000000:secret:regional-health/capacity-api/db-bmUluW|terraform-20260821064220480200000002" -> null
+      - secret_id        = "arn:aws:secretsmanager:us-east-1:000000000000:secret:regional-health/capacity-api/db-bmUluW" -> null
+      - secret_string    = (sensitive value) -> null
+      - secret_string_wo = (write-only attribute) -> null
+      - version_id       = "terraform-20260821064220480200000002" -> null
+      - version_stages   = [
+          - "AWSCURRENT",
+        ] -> null
+    }
+
+  # module.service.aws_security_group.app will be destroyed
+  - resource "aws_security_group" "app" {
+      - arn                    = "arn:aws:ec2:us-east-1:000000000000:security-group/sg-2373d0b7f17ff0a5e" -> null
+      - description            = "nginx (80) for the devops-g1-ls-capacity-api instance; app port is loopback-only" -> null
+      - egress                 = [
+          - {
+              - cidr_blocks      = [
+                  - "0.0.0.0/0",
+                ]
+              - description      = "DNS"
+              - from_port        = 53
+              - ipv6_cidr_blocks = []
+              - prefix_list_ids  = []
+              - protocol         = "udp"
+              - security_groups  = []
+              - self             = false
+              - to_port          = 53
+            },
+          - {
+              - cidr_blocks      = [
+                  - "0.0.0.0/0",
+                ]
+              - description      = "HTTP out (apt package mirrors)"
+              - from_port        = 80
+              - ipv6_cidr_blocks = []
+              - prefix_list_ids  = []
+              - protocol         = "tcp"
+              - security_groups  = []
+              - self             = false
+              - to_port          = 80
+            },
+          - {
+              - cidr_blocks      = [
+                  - "0.0.0.0/0",
+                ]
+              - description      = "HTTPS out (AWS SDK, apt-https, Aiven TLS control)"
+              - from_port        = 443
+              - ipv6_cidr_blocks = []
+              - prefix_list_ids  = []
+              - protocol         = "tcp"
+              - security_groups  = []
+              - self             = false
+              - to_port          = 443
+            },
+          - {
+              - cidr_blocks      = [
+                  - "0.0.0.0/0",
+                ]
+              - description      = "managed MySQL at Aiven (public host on db_port)"
+              - from_port        = 26713
+              - ipv6_cidr_blocks = []
+              - prefix_list_ids  = []
+              - protocol         = "tcp"
+              - security_groups  = []
+              - self             = false
+              - to_port          = 26713
+            },
+        ] -> null
+      - id                     = "sg-2373d0b7f17ff0a5e" -> null
+      - ingress                = [
+          - {
+              - cidr_blocks      = [
+                  - "172.31.0.0/16",
+                ]
+              - description      = "nginx HTTP (the only external path; enforces the readiness gate)"
+              - from_port        = 80
+              - ipv6_cidr_blocks = []
+              - prefix_list_ids  = []
+              - protocol         = "tcp"
+              - security_groups  = []
+              - self             = false
+              - to_port          = 80
+            },
+        ] -> null
+      - name                   = "devops-g1-ls-capacity-api-app-sg" -> null
+      - owner_id               = "000000000000" -> null
+      - revoke_rules_on_delete = false -> null
+      - tags                   = {
+          - "Name"    = "devops-g1-ls-capacity-api-app-sg"
+          - "Project" = "regional-health"
+          - "Service" = "capacity-api"
+        } -> null
+      - tags_all               = {
+          - "Name"    = "devops-g1-ls-capacity-api-app-sg"
+          - "Project" = "regional-health"
+          - "Service" = "capacity-api"
+        } -> null
+      - vpc_id                 = "vpc-fae02bfe6984c2155" -> null
+    }
+
+Plan: 0 to add, 0 to change, 3 to destroy.
+
+Changes to Outputs:
+  - alb_dns_name = "" -> null
+  - db_endpoint  = "mysql-1cdc8a20-kahsaymeront-bcef.l.aivencloud.com" -> null
+  - secret_arn   = "arn:aws:secretsmanager:us-east-1:000000000000:secret:regional-health/capacity-api/db-bmUluW" -> null
+module.data.aws_secretsmanager_secret_version.db: Destroying... [id=arn:aws:secretsmanager:us-east-1:000000000000:secret:regional-health/capacity-api/db-bmUluW|terraform-20260821064220480200000002]
+module.service.aws_security_group.app: Destroying... [id=sg-2373d0b7f17ff0a5e]
+module.data.aws_secretsmanager_secret_version.db: Destruction complete after 0s
+module.data.aws_secretsmanager_secret.db: Destroying... [id=arn:aws:secretsmanager:us-east-1:000000000000:secret:regional-health/capacity-api/db-bmUluW]
+module.service.aws_security_group.app: Destruction complete after 0s
+module.data.aws_secretsmanager_secret.db: Destruction complete after 0s
+
+Destroy complete! Resources: 3 destroyed.
