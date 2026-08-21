@@ -14,7 +14,7 @@ CI genuinely failed: 2 medium-severity `excessive-permissions` findings,
 exit code 13, gate blocked. This is real, verified evidence — the gate
 does what it's supposed to.
 
-## gitleaks — corrected after a real mistake, re-testing
+## gitleaks — ✅ corrected after a real mistake, then confirmed working
 
 Branch: `evidence/gitleaks-red`. First attempt used AWS's own public docs
 placeholder credential pair (`AKIAIOSFODNN7EXAMPLE` /
@@ -47,6 +47,12 @@ head commit (confirmed by observing two different PRs' logs both reporting
 "1 commits scanned... scanned ~326 bytes" against a commit that wasn't
 either PR's own change). Fixed by rebasing all three red-PR branches onto
 current `main`, which resolved the ambiguity.
+
+**Confirmed red** on commit `e8b821e` (the real key/secret pair): gitleaks
+caught both — `aws-access-token` rule on the access key, `generic-api-key`
+rule on the secret, `2 commits scanned`, exit code 2, CI genuinely blocked
+(`🛑 Leaks detected`). **Fix commit** `ecdc571` removes the file, confirming
+the gate goes back to green. This is the complete, real red→green pair.
 
 ## trivy config — real tool limitation, documented instead of forced
 
