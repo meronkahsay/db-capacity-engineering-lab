@@ -3,6 +3,10 @@ global:
   scrape_interval: 5s
   evaluation_interval: 5s
 
+# C6 — one alert rule per A1 incident (OPS-2201..2204).
+rule_files:
+  - alert-rules.yml
+
 scrape_configs:
   # Prometheus scraping itself.
   - job_name: 'prometheus'

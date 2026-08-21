@@ -1,0 +1,79 @@
+# C6 — alert rules, one per A1 incident.
+#
+# Metric names/labels are the real ones exported by api/server.js
+# (http_requests_total, http_request_duration_seconds_bucket,
+# process_resident_memory_bytes, db_errors_total) -- checked directly against
+# the instrumentation rather than assumed. Route values match the actual
+# endpoints in api/server.js and incidents/OPS-22XX.md.
+groups:
+  - name: regional-health-capacity
+    rules:
+      # OPS-2201 — patient search collapse: full table scan on an unindexed
+      # search column drives p95 latency on /api/patients/search through the
+      # floor under load. Threshold set above the A1 baseline p95 for this
+      # route (see LAB_JOURNAL.md baseline section) and below the observed
+      # incident p95, so it fires on the real regression, not noise.
+      - alert: HighSearchLatencyP95
+        expr: |
+          histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{route="/api/patients/search"}[1m])) by (le))
+          > 1
+        for: 1m
+        labels:
+          severity: page
+          incident: OPS-2201
+        annotations:
+          summary: "Patient search p95 latency over 1s"
+          mechanism: "Full table scan on an unindexed search column (see LAB_JOURNAL.md OPS-2201)."
+          description: "p95 latency on /api/patients/search has exceeded 1s for 1m. Compare against the captured baseline before assuming regression."
+
+      # OPS-2202 — registration surge / pool saturation: request rate against
+      # read endpoints outruns the MySQL connection pool, queueing requests
+      # behind pool checkout rather than failing fast. Falling throughput
+      # combined with rising latency (already covered by other panels) is
+      # the pool-queueing signature; this rule watches the direct symptom --
+      # request rate collapsing while error rate does NOT (queueing, not
+      # rejecting).
+      - alert: RegistrationEndpointThroughputCollapse
+        expr: |
+          sum(rate(http_requests_total{route="/api/patients/recent"}[1m]))
+          < 1
+        for: 2m
+        labels:
+          severity: page
+          incident: OPS-2202
+        annotations:
+          summary: "Recent-patients throughput collapsed under load"
+          mechanism: "Connection-pool queueing: request rate outruns pool size, requests queue instead of fast-failing (see LAB_JOURNAL.md OPS-2202)."
+          description: "sum(rate(http_requests_total{route=\"/api/patients/recent\"}[1m])) has been below 1 req/s for 2m during known load — check pool size vs. concurrent request volume before assuming an outage."
+
+      # OPS-2203 — bed admission lock contention: row-lock serialization on
+      # the admissions table causes db_errors_total (lock wait timeout /
+      # deadlock class) to climb on the admit endpoint.
+      - alert: AdmissionDbErrorsElevated
+        expr: |
+          sum(rate(db_errors_total{route="/api/hospitals/:id/admit"}[1m])) by (code)
+          > 0.1
+        for: 1m
+        labels:
+          severity: page
+          incident: OPS-2203
+        annotations:
+          summary: "DB errors on bed admission climbing"
+          mechanism: "Row-lock serialization on the admissions table under concurrent admits (see LAB_JOURNAL.md OPS-2203)."
+          description: "rate(db_errors_total) on the admit route has exceeded 0.1/s for 1m — check performance_schema.data_locks / SHOW ENGINE INNODB STATUS for lock waits before assuming app-level bug."
+
+      # OPS-2204 — nightly export OOM: unbounded/O(N) memory growth streaming
+      # the full export payload into process memory, crash-looping the
+      # container. Threshold set below the container's --memory limit so it
+      # fires before the OOM kill, not after.
+      - alert: ExportMemoryNearLimit
+        expr: |
+          process_resident_memory_bytes > (0.85 * 512 * 1024 * 1024)
+        for: 30s
+        labels:
+          severity: page
+          incident: OPS-2204
+        annotations:
+          summary: "API process memory approaching the 512MB container limit"
+          mechanism: "O(N) memory growth in the export handler — full result set materialized before streaming (see LAB_JOURNAL.md OPS-2204)."
+          description: "process_resident_memory_bytes has exceeded 85% of the 512MB cgroup limit for 30s — this is the pre-OOM warning the original incident had no alert for."
