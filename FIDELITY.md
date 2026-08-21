@@ -125,6 +125,42 @@ never have been exercised end-to-end.
 real EC2 API regardless of any Docker image state — this entire class of
 failure doesn't exist off LocalStack.
 
+**Update (2026-08-21):** the trainer independently confirmed the actual
+root cause is one level up from the tag-format issue above: real
+Docker-backed EC2 (a backing container you can boot and curl) is a
+LocalStack **Base+ paid feature**. The free Hobby tier used for this lab
+gives a mock EC2 only — `RunInstances` returns a "running" instance with no
+backing container, so `DescribeImages`/`describe-images --owners self`
+never resolves an image regardless of tag format. The AMI-tag fix above is
+still correct and worth keeping (it fixes a real format mismatch for
+whoever eventually runs this against a paid LocalStack tier or real AWS),
+but it was not, in the end, what was blocking this specific apply. Per the
+updated brief: EC2 and ALB are both graded as IaC only (write it, apply the
+mock/skip the apply, never expect either to actually route traffic on this
+tier); the real runtime is `scripts/run-app.sh`, running the app container
+directly against the same Secrets Manager secret and Aiven database.
+
+## 8. LocalStack Hobby tier's EC2 is mock-only — confirmed by the trainer, not just inferred
+
+Documented separately from #7 above because it's a distinct, more
+fundamental fact about the platform, not a code bug: on the free Hobby
+tier, `aws_instance` (EC2) creation succeeds and returns a real-looking
+instance ID, but there is **no backing Docker container** — no
+`ec2_vm_manager:docker` tag, nothing to `docker exec` into or curl
+user-data output from. `awslocal ec2 describe-images --owners self`
+returns empty even immediately after a real, correctly-tagged `docker
+build` — because the mock EC2 provider never looks at Docker images at
+all, correct tag or not. This matches every symptom hit while debugging
+#7, and was confirmed directly by Rob (trainer) in response to the same
+failure reported by another group, not inferred from LocalStack's own
+docs (which don't clearly state this tier boundary for EC2 the way they do
+for ELBv2's licensing error message).
+
+**Real-AWS behavior:** `RunInstances` creates a real EC2 instance that
+actually boots the given AMI and runs user-data — no Docker involvement at
+all, so this entire class of limitation is specific to LocalStack's
+emulation layer and doesn't exist off it.
+
 ---
 
 None of the above required weakening the Terraform to work around

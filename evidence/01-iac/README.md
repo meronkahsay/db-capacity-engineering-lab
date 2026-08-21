@@ -1,7 +1,23 @@
 # C1 — IaC apply evidence
 
-**Status:** ⚠️ partial apply, real infra created and destroyed cleanly, one
-resource blocked by a LocalStack limitation — see below and FIDELITY.md.
+**Status:** ✅ resolved. The `aws_instance.app` gap investigated below was
+independently confirmed by the trainer (2026-08-21, group channel) as an
+expected LocalStack Hobby-tier limitation, not a bug: real Docker-backed
+EC2 (the mode that actually creates a backing container) is a Base+ paid
+feature. The free tier's `RunInstances` returns a "running" mock instance
+with no backing container — matching everything found below (image present
+under the correct Docker tag, `DescribeImages` still 400ing). Per the
+updated brief: EC2 is graded as IaC (write it, apply the mock, it shows in
+the plan — already true here) and the real runtime moves to a container run
+directly via `scripts/run-app.sh`, wired to the same Secrets Manager secret
+and Aiven database. Same story for the ALB — see `terraform/lb-design/`.
+
+The investigation below (root cause, local Docker/LocalStack log
+inspection, the AMI-tag-stripping fix) is kept as-is: it's real, verified
+work, and the fix (`fix/service-ami-tag-localstack` in the group repo)
+is still correct and worth merging even though it wasn't the actual
+blocker — LocalStack's mock EC2 never calls `DescribeImages` against a
+real backing container regardless of the tag format.
 
 ## What actually happened (2026-08-21, LocalStack freemium, Codespace)
 
