@@ -9,11 +9,16 @@
 # =============================================================================
 
 locals {
-  # Pinned to regional-health-platform@main as of 2026-08-20 (after the
-  # Aiven CA-cert wiring fix, PR #9 -- modules/service now writes db_ca_cert
-  # to /etc/app/db-ca.pem and exports DB_CA_CERT_PATH). Update this SHA (and
-  # re-run `tofu plan`) when a group module change needs picking up here.
-  platform_ref = "4ebcd9bdf856b4b97796041223db025b5e6f78af"
+  # Pinned to regional-health-platform's integration/individual-unblock
+  # branch (commit 10e0eed) as of 2026-08-21: main + fix/trivy-image-
+  # ignore-unfixed + fix/service-alb-optional-localstack + feat/state-
+  # bootstrap merged together, ahead of PRs #10/#11 landing on main via
+  # GitHub's merge button. Re-pin to a post-merge main SHA once those land
+  # -- functionally identical, this just unblocks apply now. Adds:
+  # create_alb variable (default false, LocalStack elbv2 isn't licensed),
+  # ignore-unfixed on the trivy image scan, and bootstrap/ (S3+DynamoDB
+  # state store, not consumed by this module directly).
+  platform_ref = "10e0eed41acfbe6e82e816a5b2d68c9929d5477c"
 }
 
 module "data" {
