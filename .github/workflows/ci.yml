@@ -30,7 +30,7 @@ jobs:
     # Pinned to the same regional-health-platform commit as
     # terraform/main.tf's platform_ref local -- keep both in sync when
     # bumping either one.
-    uses: nebyathhailu/regional-health-platform/.github/workflows/golden-ci.yml@10e0eed41acfbe6e82e816a5b2d68c9929d5477c
+    uses: nebyathhailu/regional-health-platform/.github/workflows/golden-ci.yml@3cab12d1d9e749e30b0627c52ecfe00efb14e1de
     with:
       app_dir: api
       image_name: capacity-api

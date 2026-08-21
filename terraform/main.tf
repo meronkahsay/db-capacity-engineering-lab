@@ -10,15 +10,19 @@
 
 locals {
   # Pinned to regional-health-platform's integration/individual-unblock
-  # branch (commit 10e0eed) as of 2026-08-21: main + fix/trivy-image-
+  # branch (commit 3cab12d) as of 2026-08-21: main + fix/trivy-image-
   # ignore-unfixed + fix/service-alb-optional-localstack + feat/state-
-  # bootstrap merged together, ahead of PRs #10/#11 landing on main via
-  # GitHub's merge button. Re-pin to a post-merge main SHA once those land
-  # -- functionally identical, this just unblocks apply now. Adds:
-  # create_alb variable (default false, LocalStack elbv2 isn't licensed),
-  # ignore-unfixed on the trivy image scan, and bootstrap/ (S3+DynamoDB
-  # state store, not consumed by this module directly).
-  platform_ref = "10e0eed41acfbe6e82e816a5b2d68c9929d5477c"
+  # bootstrap + fix/service-ami-tag-localstack merged together, ahead of
+  # those PRs landing on main via GitHub's merge button. Re-pin to a
+  # post-merge main SHA once they land -- functionally identical, this just
+  # unblocks apply now. Adds: create_alb variable (default false, LocalStack
+  # elbv2 isn't licensed), ignore-unfixed on the trivy image scan,
+  # bootstrap/ (S3+DynamoDB state store, not consumed by this module
+  # directly), and the AMI-tag fix (module no longer strips the
+  # localstack-ec2/<name>:ami-<hex> tag when targeting LocalStack -- see
+  # FIDELITY.md #7 and evidence/01-iac/README.md for why the first apply
+  # attempt failed without this).
+  platform_ref = "3cab12d1d9e749e30b0627c52ecfe00efb14e1de"
 }
 
 module "data" {
